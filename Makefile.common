@@ -72,6 +72,7 @@ SOURCES_CXX := \
 	       $(GME_DIR)/gme/Vgm_Emu_Impl.cpp \
 	       $(GME_DIR)/gme/Ym2413_Emu.cpp \
 	       $(GME_DIR)/gme/Ym2612_Nuked.cpp
+		   SOURCES_CXX += $(CORE_DIR)/src/vgm_backend.cpp
 
 SOURCES_C    := $(CORE_DIR)/src/libretro.c \
 		$(CORE_DIR)/src/graphics.c \
@@ -110,4 +111,15 @@ SOURCES_C += \
 	     $(LIBRETRO_COMM_DIR)/file/file_path.c \
 	     $(LIBRETRO_COMM_DIR)/file/file_path_io.c \
 	     $(LIBRETRO_COMM_DIR)/time/rtime.c
+endif
+INCFLAGS += -I$(DEPS_DIR)/libvgm
+
+ifeq ($(platform),win)
+LIBVGM_BUILD = $(DEPS_DIR)/libvgm/build-win
+else
+LIBVGM_BUILD = $(DEPS_DIR)/libvgm/build
+endif
+LDFLAGS += -Wl,--start-group $(shell find $(LIBVGM_BUILD) -name 'libvgm-*.a') -Wl,--end-group
+ifeq ($(platform),win)
+LDFLAGS += -static -static-libgcc -static-libstdc++
 endif
