@@ -8,6 +8,7 @@
 
 #include "graphics.h"
 #include "player.h"
+#include "spectrum.h"
 
 // Static globals
 static surface *framebuffer = NULL;
@@ -96,7 +97,7 @@ void retro_get_system_info(struct retro_system_info *info)
 {
    memset(info, 0, sizeof(*info));
    info->library_name = "Game Music Emulator";
-   info->library_version = "v0.6.1";
+   info->library_version = "v0.6.6";
    info->need_fullpath = true;
    info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip";
    info->block_extract = true;
@@ -155,6 +156,7 @@ void retro_run(void)
    uint16_t input = 0;
    uint16_t realinput = 0;
    int i;
+   short *audio;
 
    // input handling
    input_poll_cb();
@@ -175,12 +177,18 @@ void retro_run(void)
    if(input & (1<<RETRO_DEVICE_ID_JOYPAD_START))
       play_pause();
 
+   //audio primeiro, para o espectro usar os samples deste frame
+   audio = play();
+   spectrum_push(audio, 735);
+   spectrum_update();
+
    //graphic handling
-   memset(framebuffer->pixel_data,0,framebuffer->bytes_per_pixel * framebuffer->width * framebuffer->height);
+   spectrum_draw_background(framebuffer);
    draw_ui();
+   spectrum_draw_bars(framebuffer);
    video_cb(framebuffer->pixel_data, framebuffer->width, framebuffer->height, framebuffer->bytes_per_pixel * framebuffer->width);
    //audio handling
-   audio_batch_cb(play(),735);
+   audio_batch_cb(audio,735);
 }
 
 // File Loading

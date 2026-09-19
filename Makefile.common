@@ -1,3 +1,6 @@
+CXXFLAGS += -DVGM_YM2612_NUKED
+CXXFLAGS += -DBLARGG_LITTLE_ENDIAN=1
+CFLAGS += -DBLARGG_LITTLE_ENDIAN=1
 DEPS_DIR          = $(CORE_DIR)/deps
 GME_DIR	          = $(DEPS_DIR)/game-music-emu
 LIBRETRO_COMM_DIR = $(DEPS_DIR)/libretro-common
@@ -5,6 +8,7 @@ LIBRETRO_COMM_DIR = $(DEPS_DIR)/libretro-common
 INCFLAGS 	  = -I$(CORE_DIR) \
 		    -I$(LIBRETRO_COMM_DIR)/include \
 		    -I$(DEPS_DIR)/game-music-emu/gme \
+                 -I$(DEPS_DIR)/ymfm/src \
 		    -I$(DEPS_DIR)/zlib-1.2.8 \
 		    -I$(DEPS_DIR)/zlib-1.2.8/contrib/minizip
 
@@ -14,6 +18,9 @@ endif
 
 SOURCES_CXX := \
 	       $(GME_DIR)/gme/Ay_Apu.cpp \
+            $(DEPS_DIR)/ymfm/src/ymfm_opm.cpp \
+            $(DEPS_DIR)/ymfm/src/ymfm_opl.cpp \
+            $(DEPS_DIR)/ymfm/src/ymfm_adpcm.cpp \
 	       $(GME_DIR)/gme/Ay_Cpu.cpp \
 	       $(GME_DIR)/gme/Ay_Emu.cpp \
 	       $(GME_DIR)/gme/Blip_Buffer.cpp \
@@ -58,10 +65,11 @@ SOURCES_CXX := \
 	       $(GME_DIR)/gme/Vgm_Emu.cpp \
 	       $(GME_DIR)/gme/Vgm_Emu_Impl.cpp \
 	       $(GME_DIR)/gme/Ym2413_Emu.cpp \
-	       $(GME_DIR)/gme/Ym2612_Emu.cpp
+	       $(GME_DIR)/gme/Ym2612_Nuked.cpp
 
 SOURCES_C    := $(CORE_DIR)/src/libretro.c \
 		$(CORE_DIR)/src/graphics.c \
+		$(CORE_DIR)/src/spectrum.c \
 		$(CORE_DIR)/src/player.c \
 		$(CORE_DIR)/src/playlist.c \
 		$(CORE_DIR)/src/fileformat.c \
