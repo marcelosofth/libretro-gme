@@ -14,7 +14,7 @@ corename = "GME"
 license = "LGPLv2, GPLv2"
 
 # Version of the core:
-display_version = "v0.6.1"
+display_version = "v0.6.6"
 
 # Whether or not the core requires an external file to work:
 supports_no_game = "false"

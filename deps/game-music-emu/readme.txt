@@ -1,4 +1,4 @@
-Game_Music_Emu 0.6.1: Game Music Emulators
+Game_Music_Emu 0.6.6: Game Music Emulators
 ------------------------------------------
 Game_Music_Emu is a collection of video game music file emulators that
 support the following formats and systems:
@@ -34,18 +34,20 @@ several architectures, Mac OS, MorphOS, Xbox, PlayStation Portable,
 GP2X, and Nintendo DS.
 
 Author : Shay Green <gblargg@gmail.com>
-Website: http://www.slack.net/~ant/
-Forum  : http://groups.google.com/group/blargg-sound-libs
+Website: https://github.com/libgme/game-music-emu/wiki
 License: GNU Lesser General Public License (LGPL)
 
-Current Maintainer: Michael Pyne <mpyne@purinchu.net>
+Note: When you will use MAME YM2612 emulator, the license of library
+will be GNU General Public License (GPL) v2.0+!
+
+Current Maintainers: Vitaly Novichkov <admin@wohlnet.ru>, Michael Pyne <mpyne@purinchu.net>
 
 Getting Started
 ---------------
 Build a program consisting of demo/basics.c, demo/Wave_Writer.cpp, and
 all source files in gme/.
 
-Or, if you have CMake 2.6 or later, execute at a command prompt (from the
+Or, if you have CMake 3.3 or later, execute at a command prompt (from the
 extracted source directory):
 
     mkdir build
@@ -126,6 +128,8 @@ gme/
   Hes_Emu.h           TurboGrafx-16/PC Engine HES emulator
   Hes_Apu.cpp
   Hes_Apu.h
+  Hes_Apu_Adpcm.cpp
+  Hes_Apu_Adpcm.h
   Hes_Cpu.cpp
   Hes_Cpu.h
   hes_cpu_io.h
@@ -191,8 +195,13 @@ gme/
   Sms_Apu.cpp         Common Sega emulator files
   Sms_Apu.h
   Sms_Oscs.h
-  Ym2612_Emu.cpp
   Ym2612_Emu.h
+  Ym2612_GENS.cpp     GENS 2.10 YM2612 emulator (LGPLv2.1+ license)
+  Ym2612_GENS.h
+  Ym2612_MAME.cpp     MAME YM2612 emulator (GPLv2.0+ license)
+  Ym2612_MAME.h
+  Ym2612_Nuked.cpp    Nuked OPN2 emulator (LGPLv2.1+ license)
+  Ym2612_Nuked.h
   Dual_Resampler.cpp
   Dual_Resampler.h
   Fir_Resampler.cpp
@@ -219,7 +228,7 @@ gme/
   Multi_Buffer.cpp
   Data_Reader.h
   Data_Reader.cpp
-  
+
   CMakeLists.txt      CMake build rules
 
 
@@ -227,6 +236,8 @@ Legal
 -----
 Game_Music_Emu library copyright (C) 2003-2009 Shay Green.
 Sega Genesis YM2612 emulator copyright (C) 2002 Stephane Dallongeville.
+MAME YM2612 emulator copyright (C) 2003 Jarek Burczynski, Tatsuyuki Satoh
+Nuked OPN2 emulator copyright (C) 2017 Alexey Khokholov (Nuke.YKT)
 
 --
 Shay Green <gblargg@gmail.com>

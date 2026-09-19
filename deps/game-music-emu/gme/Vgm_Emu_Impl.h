@@ -1,6 +1,6 @@
 // Low-level parts of Vgm_Emu
 
-// Game_Music_Emu 0.6.0
+// Game_Music_Emu https://bitbucket.org/mpyne/game-music-emu/
 #ifndef VGM_EMU_IMPL_H
 #define VGM_EMU_IMPL_H
 
@@ -8,6 +8,9 @@
 #include "Classic_Emu.h"
 #include "Ym2413_Emu.h"
 #include "Ym2612_Emu.h"
+#include "Ymfm_Opm_Emu.h"
+#include "Ymfm_Opl_Mono_Emu.h"
+#include "Ymfm_Opn_Emu.h"
 #include "Sms_Apu.h"
 
 template<class Emu>
@@ -29,42 +32,48 @@ public:
 	typedef Classic_Emu::sample_t sample_t;
 protected:
 	enum { stereo = 2 };
-	
+
 	typedef int vgm_time_t;
-	
+
 	enum { fm_time_bits = 12 };
 	typedef int fm_time_t;
 	long fm_time_offset;
-	int fm_time_factor;
+	uint64_t fm_time_factor;
 	fm_time_t to_fm_time( vgm_time_t ) const;
-	
+
 	enum { blip_time_bits = 12 };
-	int blip_time_factor;
+	uint64_t blip_time_factor;
 	blip_time_t to_blip_time( vgm_time_t ) const;
-	
+
 	byte const* data;
 	byte const* loop_begin;
 	byte const* data_end;
 	void update_fm_rates( long* ym2413_rate, long* ym2612_rate ) const;
-	
+
 	vgm_time_t vgm_time;
 	byte const* pos;
 	blip_time_t run_commands( vgm_time_t );
 	int play_frame( blip_time_t blip_time, int sample_count, sample_t* buf );
-	
+
 	byte const* pcm_data;
 	byte const* pcm_pos;
 	int dac_amp;
 	int dac_disabled; // -1 if disabled
 	void write_pcm( vgm_time_t, int amp );
-	
-	Ym_Emu<Ym2612_Emu> ym2612;
-	Ym_Emu<Ym2413_Emu> ym2413;
-	
+
+	Ym_Emu<Ym2612_Emu> ym2612[2];
+	Ym_Emu<Ym2413_Emu> ym2413[2];
+	Ym_Emu<Ymfm_Opm_Emu> ym2151;
+	Ym_Emu<Ymfm_Ym3812_Emu> ym3812;
+	Ym_Emu<Ymfm_Ym3526_Emu> ym3526;
+	Ym_Emu<Ymfm_Opn_Emu> ym2203;
+
 	Blip_Buffer blip_buf;
-	Sms_Apu psg;
+	Sms_Apu psg[2];
+	bool psg_dual;
+	bool psg_t6w28;
 	Blip_Synth<blip_med_quality,1> dac_synth;
-	
+
 	friend class Vgm_Emu;
 };
 

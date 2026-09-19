@@ -20,6 +20,9 @@ SOURCES_CXX := \
 	       $(GME_DIR)/gme/Ay_Apu.cpp \
             $(DEPS_DIR)/ymfm/src/ymfm_opm.cpp \
             $(DEPS_DIR)/ymfm/src/ymfm_opl.cpp \
+            $(DEPS_DIR)/ymfm/src/ymfm_opn.cpp \
+            $(DEPS_DIR)/ymfm/src/ymfm_pcm.cpp \
+            $(DEPS_DIR)/ymfm/src/ymfm_ssg.cpp \
             $(DEPS_DIR)/ymfm/src/ymfm_adpcm.cpp \
 	       $(GME_DIR)/gme/Ay_Cpu.cpp \
 	       $(GME_DIR)/gme/Ay_Emu.cpp \
@@ -37,6 +40,7 @@ SOURCES_CXX := \
 	       $(GME_DIR)/gme/Gme_File.cpp \
 	       $(GME_DIR)/gme/Gym_Emu.cpp \
 	       $(GME_DIR)/gme/Hes_Apu.cpp \
+            $(GME_DIR)/gme/Hes_Apu_Adpcm.cpp \
 	       $(GME_DIR)/gme/Hes_Cpu.cpp \
 	       $(GME_DIR)/gme/Hes_Emu.cpp \
 	       $(GME_DIR)/gme/Kss_Cpu.cpp \
@@ -51,6 +55,8 @@ SOURCES_CXX := \
 	       $(GME_DIR)/gme/Nes_Namco_Apu.cpp \
 	       $(GME_DIR)/gme/Nes_Oscs.cpp \
 	       $(GME_DIR)/gme/Nes_Vrc6_Apu.cpp \
+            $(GME_DIR)/gme/Nes_Fds_Apu.cpp \
+            $(GME_DIR)/gme/Nes_Vrc7_Apu.cpp \
 	       $(GME_DIR)/gme/Nsfe_Emu.cpp \
 	       $(GME_DIR)/gme/Nsf_Emu.cpp \
 	       $(GME_DIR)/gme/Sap_Apu.cpp \
@@ -86,7 +92,8 @@ SOURCES_C    := $(CORE_DIR)/src/libretro.c \
 		$(DEPS_DIR)/zlib-1.2.8/gzlib.c \
 		$(DEPS_DIR)/zlib-1.2.8/gzread.c \
 		$(DEPS_DIR)/zlib-1.2.8/gzwrite.c \
-		$(DEPS_DIR)/zlib-1.2.8/trees.c
+		$(DEPS_DIR)/zlib-1.2.8/trees.c \
+                $(GME_DIR)/gme/ext/emu2413.c
 
 ifneq ($(STATIC_LINKING), 1)
 SOURCES_C += \
