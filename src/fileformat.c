@@ -29,7 +29,14 @@ static const char *gme_allowed_exts[] = {
     "sap","SAP",
     "spc","SPC",
     "vgm","VGM",
-    "vgz","VGZ"
+    "vgz","VGZ",
+      "mod","MOD",
+      "s3m","S3M",
+      "xm","XM",
+      "it","IT",
+      "mp3","MP3",
+      "mid","MID",
+      "midi","MIDI"
 };
 
 static bool is_gme_allowed_ext(char *ext)

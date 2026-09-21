@@ -60,46 +60,420 @@ size_t retro_get_memory_size(unsigned id){ return 0; }
 void retro_cheat_reset(void) {}
 void retro_cheat_set(unsigned index, bool enabled, const char *code) {}
 
-static int draw_text_centered(char* text,char r, char g, char b, int y, int maxlen)
+/* ---- desenho de texto (sem alocar memoria, com clip) ---- */
+
+static void put_glyph(unsigned char ch, int px, int py, unsigned short color, int cx0, int cx1)
 {
-   int msglen = get_string_length(text);
-   draw_string(framebuffer,get_color(r,g,b),text,MAX(160-(msglen/2),21), y,get_track_elapsed_frames());
-   return MAX(msglen,maxlen);
+   int x, y, sx, sy;
+   int charx = (ch % 16) * 8;
+   int chary = (ch >> 4) * 8;
+   for (y = 0; y < 8; y++)
+   {
+      for (x = 0; x < 8; x++)
+      {
+         if (!is_font_pixel(charx + x, chary + y))
+            continue;
+         for (sy = 0; sy < 2; sy++)
+         {
+            int yy = py + y * 2 + sy;
+            if (yy < 0 || yy >= 480)
+               continue;
+            for (sx = 0; sx < 2; sx++)
+            {
+               int xx = px + x * 2 + sx;
+               if (xx < cx0 || xx >= cx1 || xx < 0 || xx >= 640)
+                  continue;
+               set_pixel(framebuffer, xx, yy, color);
+            }
+         }
+      }
+   }
 }
 
-// Custom functions
+/* colunas realmente usadas pelo glifo (para espacamento proporcional) */
+static void glyph_extent(unsigned char ch, int *x0, int *x1)
+{
+   int x, y;
+   int charx = (ch % 16) * 8;
+   int chary = (ch >> 4) * 8;
+   *x0 = 8;
+   *x1 = -1;
+   for (x = 0; x < 8; x++)
+      for (y = 0; y < 8; y++)
+         if (is_font_pixel(charx + x, chary + y))
+         {
+            if (x < *x0) *x0 = x;
+            if (x > *x1) *x1 = x;
+         }
+}
+
+static int text_width_prop(const char *text)
+{
+   int w = 0, x0, x1;
+   for (; *text; text++)
+   {
+      glyph_extent((unsigned char)*text, &x0, &x1);
+      w += (x1 < 0) ? 4 : (x1 - x0 + 2);
+   }
+   w = w > 0 ? w - 1 : 0;
+   return w * 2;
+}
+
+static void draw_text_prop(const char *text, int x, int y, unsigned short color)
+{
+   int x0, x1;
+   for (; *text; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      glyph_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += 4 * 2;
+         continue;
+      }
+      put_glyph(ch, x - x0 * 2, y, color, 0, 640);
+      x += (x1 - x0 + 2) * 2;
+   }
+}
+
+/* texto monoespacado; se passar de maxw, rola de um lado para o outro */
+static void draw_text_scroll(const char *text, int x, int y, int maxw, unsigned short color)
+{
+   int len   = (int)strlen(text);
+   int textw = len * 8 * 2;
+   int off   = 0, i;
+
+   if (textw > maxw)
+   {
+      int delta  = textw - maxw;
+      int delay  = 30;
+      int modulo = delta + delay * 2;
+      int frames = get_track_elapsed_frames();
+      off = (modulo - abs((frames / 2) % (2 * modulo) - modulo)) - delay;
+      if (off < 0)     off = 0;
+      if (off > delta) off = delta;
+   }
+
+   for (i = 0; i < len; i++)
+   {
+      int gx = x - off + i * 8 * 2;
+      if (gx + 8 * 2 <= x || gx >= x + maxw)
+         continue;
+      put_glyph((unsigned char)text[i], gx, y, color, x, x + maxw);
+   }
+}
+
+/* texto proporcional cortado em maxx */
+static void draw_text_prop_clip(const char *text, int x, int y, unsigned short color, int maxx)
+{
+   int x0, x1;
+   for (; *text && x < maxx; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      glyph_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += 4 * 2;
+         continue;
+      }
+      put_glyph(ch, x - x0 * 2, y, color, 0, maxx);
+      x += (x1 - x0 + 2) * 2;
+   }
+}
+
+/* LED de atividade: acende com o volume do audio e decai rapido */
+static int led_level = 0;
+
+static void led_update(const short *audio, int n)
+{
+   int i, pk = 0, cur;
+   for (i = 0; i < n; i++)
+   {
+      int v = audio[i];
+      if (v < 0) v = -v;
+      if (v > pk) pk = v;
+   }
+   cur = pk / 40;
+   if (cur > 255) cur = 255;
+   led_level = (led_level * 192) >> 8;
+   if (cur > led_level)
+      led_level = cur;
+}
+
+static void draw_led(int cx, int cy)
+{
+   int dx, dy;
+   int t = led_level;
+   int r = 8 + (23 * t) / 255, g = 3 + (9 * t) / 255, b = 2 + (5 * t) / 255;
+   unsigned short col;
+   if (t < 48) /* em repouso/fraco: escurece ate o preto; acima disso fica igual */
+   {
+      r = (r * t) / 48;
+      g = (g * t) / 48;
+      b = (b * t) / 48;
+   }
+   if (t < 4) /* sem som: preto */
+      col = get_color(0, 0, 0);
+   else
+      col = get_color(r, g, b);
+   for (dy = -6; dy <= 6; dy++)
+      for (dx = -6; dx <= 6; dx++)
+         if (dx * dx + dy * dy <= 40)
+            set_pixel(framebuffer, cx + dx, cy + dy, col);
+   if (t > 200) /* brilho branco do LED: 2x2 pixels (antes era 1) */
+   {
+      unsigned short wh = get_color(31, 40, 30);
+      set_pixel(framebuffer, cx - 3, cy - 3, wh);
+      set_pixel(framebuffer, cx - 2, cy - 3, wh);
+      set_pixel(framebuffer, cx - 3, cy - 2, wh);
+      set_pixel(framebuffer, cx - 2, cy - 2, wh);
+   }
+}
+
+/* ---- layout: cabecalho / espectro / progresso ---- */
+#define UI_LEFT   32
+#define UI_RIGHT  608
+#define UI_W      (UI_RIGHT - UI_LEFT)
+
+/* Cabecalho: 4 linhas, uma por faixa do fundo (y = topo do texto).
+ * 1) chip  2) sistema  3) jogo  4) faixa + Track N/M.
+ * HDR_TEXT_MAX_X: limite direito das linhas 1-3 (o logo comeca depois). */
+#define HDR_Y1 24
+#define HDR_Y2 60
+#define HDR_Y3 96
+#define HDR_Y4 132
+#define HDR_TEXT_MAX_X 416
+
+/* ---- fonte do CHIP: Press Start 2P (src/font_chip.h) com degrade vertical ---- */
+#include "font_chip.h"
+
+#define CHIP_SPACE 5   /* largura do espaco (px do atlas) */
+
+static unsigned short chip_grad[8];
+
+static void chip_grad_init(void)
+{
+   /* degrade da imagem de referencia: azul -> branco (topo), dourado -> creme (base) */
+   static const unsigned char rgb[8][3] = {
+      { 69, 149, 204}, {135, 190, 231}, {212, 237, 253}, {255, 255, 255},
+      {183, 129,  41}, {229, 185,  87}, {252, 245, 232}, {252, 245, 232}
+   };
+   int i;
+   for (i = 0; i < 8; i++)
+      chip_grad[i] = get_color(rgb[i][0] >> 3, rgb[i][1] >> 2, rgb[i][2] >> 3);
+}
+
+static int chip_pixel(unsigned char ch, int x, int y)
+{
+   const unsigned short *p = (const unsigned short *)font_chip.pixel_data;
+   return p[(ch % 16) * 8 + x + ((ch >> 4) * 8 + y) * 128] == 0;
+}
+
+static void chip_extent(unsigned char ch, int *x0, int *x1)
+{
+   int x, y;
+   *x0 = 8;
+   *x1 = -1;
+   for (x = 0; x < 8; x++)
+      for (y = 0; y < 8; y++)
+         if (chip_pixel(ch, x, y))
+         {
+            if (x < *x0) *x0 = x;
+            if (x > *x1) *x1 = x;
+         }
+}
+
+static void chip_put_glyph(unsigned char ch, int px, int py, int cx1)
+{
+   int x, y, sx, sy;
+   for (y = 0; y < 8; y++)
+      for (x = 0; x < 8; x++)
+      {
+         if (!chip_pixel(ch, x, y))
+            continue;
+         for (sy = 0; sy < 2; sy++)
+         {
+            int yy = py + y * 2 + sy;
+            if (yy < 0 || yy >= 480)
+               continue;
+            for (sx = 0; sx < 2; sx++)
+            {
+               int xx = px + x * 2 + sx;
+               if (xx < 0 || xx >= 640 || xx >= cx1)
+                  continue;
+               set_pixel(framebuffer, xx, yy, chip_grad[y]);
+            }
+         }
+      }
+}
+
+static int chip_text_width(const char *text)
+{
+   int w = 0, x0, x1;
+   for (; *text; text++)
+   {
+      chip_extent((unsigned char)*text, &x0, &x1);
+      w += (x1 < 0) ? CHIP_SPACE : (x1 - x0 + 2);
+   }
+   w = w > 0 ? w - 1 : 0;
+   return w * 2;
+}
+
+/* maxx = limite direito absoluto (x) */
+static void chip_draw_text(const char *text, int x, int y, int maxx)
+{
+   int x0, x1;
+   chip_grad_init();
+   for (; *text && x < maxx; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      chip_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += CHIP_SPACE * 2;
+         continue;
+      }
+      chip_put_glyph(ch, x - x0 * 2, y, maxx);
+      x += (x1 - x0 + 2) * 2;
+   }
+}
+
 static void draw_ui(void)
 {
-   int maxlen    = 0;
-   char *message = malloc(100);
+   char message[512];
+   int w, prog;
 
-   //lines
-   draw_box(framebuffer,get_color(31,63,31),5,5,315,235);
-   draw_line(framebuffer,get_color(15,31,15),5,5,20,20);
-   draw_line(framebuffer,get_color(15,31,15),315,5,300,20);
-   draw_line(framebuffer,get_color(15,31,15),5,235,20,220);
-   draw_line(framebuffer,get_color(15,31,15),315,235,300,220);
-   draw_box(framebuffer,get_color(15,31,15),20,20,300,220);
-   //text
-   maxlen = draw_text_centered(get_game_name(message),31,0,0,100,maxlen);
-   maxlen = draw_text_centered(get_track_count(message),0,63,0,110,maxlen);
-   maxlen = draw_text_centered(get_song_name(message),0,0,31,120,maxlen);
-   maxlen = draw_text_centered(get_track_position(message),31,63,31,130,maxlen);
-   maxlen = MIN(maxlen,280);
-   draw_box(framebuffer,get_color(15,0,15),160-(maxlen/2),98,160+(maxlen/2),140);
-   free(message);
+   /* cabecalho: linha 4 = faixa (esq) + Track N/M (dir) */
+   get_track_label(message);
+   w = text_width_prop(message);
+   draw_text_prop(message, UI_RIGHT - w, HDR_Y4, get_color(28, 56, 28));
+   draw_text_scroll(get_song_name(message), UI_LEFT, HDR_Y4, UI_W - w - 16, get_color(30, 58, 25));
+
+   /* linha 3 = jogo */
+   draw_text_scroll(get_game_name(message), UI_LEFT, HDR_Y3, HDR_TEXT_MAX_X - UI_LEFT, get_color(19, 36, 27));
+
+   /* linha 2 = sistema */
+   get_system_line(message);
+   draw_text_prop_clip(message, UI_LEFT, HDR_Y2, get_color(15, 33, 21), HDR_TEXT_MAX_X);
+
+   /* linha 1 = CHIP: (led) chip de audio - Press Start 2P com degrade */
+   {
+      int lx = UI_LEFT + chip_text_width("CHIP:") + 16;
+      chip_draw_text("CHIP:", UI_LEFT, HDR_Y1, HDR_TEXT_MAX_X);
+      draw_led(lx + 6, HDR_Y1 + 6);
+      chip_draw_text(get_chip_text(message), lx + 24, HDR_Y1, HDR_TEXT_MAX_X);
+   }
+
+   /* barra de progresso (proxima ao espectro, cuja base fica em y=408) */
+   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 413, UI_W, 12);
+   prog = get_track_progress_permille();
+   if (prog > 0)
+      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 413, (UI_W * prog) / 1000, 12);
+
+   /* tempo (esquerda) e taxa de amostragem (direita) */
+   draw_text_prop(get_time_text(message), UI_LEFT, 442, get_color(27, 54, 29));
+
+   get_rate_text(message);
+   w = text_width_prop(message);
+   draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
 }
 
-/*
- * Tell libretro about this core, it's name, version and which rom files it supports.
- */
+/* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
+#define WAVE_TOP  167
+#define WAVE_H    48
+#define WAVE_GAP  10
+
+static void draw_wave_channel(const short *audio, int frames, int offset,
+                               int y0, int h, unsigned short color, int gain_q8)
+{
+   int x, px = -1, py = 0;
+   int mid = y0 + h / 2;
+
+   draw_line(framebuffer, get_color(4, 7, 8), UI_LEFT, mid, UI_RIGHT, mid);
+
+   for (x = 0; x < UI_W; x++)
+   {
+      int idx = (x * frames) / UI_W;
+      int s   = audio[idx * 2 + offset];
+      int v = (s * gain_q8) >> 8;
+      int y = mid - (v * (h / 2)) / 32768;
+      if (y < y0)         y = y0;
+      if (y >= y0 + h)     y = y0 + h - 1;
+      if (px >= 0)
+         draw_line(framebuffer, color, UI_LEFT + px, py, UI_LEFT + x, y);
+      px = x;
+      py = y;
+   }
+}
+
+/* Janela do osciloscopio: WAVE_SPAN amostras (por canal) mais recentes.
+ * 735 = 1 quadro (~16,7 ms); maior = mais oscilacoes visiveis na tela.
+ * WAVE_RING deve ser potencia de 2 e maior que WAVE_SPAN. */
+#define WAVE_SPAN 1470
+#define WAVE_RING 8192
+
+static short wave_ring[WAVE_RING * 2];
+static short wave_lin[WAVE_SPAN * 2];
+static unsigned wave_pos = 0;
+
+/* Ganho automatico do osciloscopio (mais movimento nas ondas) */
+#define WAVE_TARGET   28000   /* pico alvo (max 32767) */
+#define WAVE_MAX_GAIN 12      /* ganho maximo (x) */
+#define WAVE_MIN_PEAK 1500    /* abaixo disso nao amplia mais (evita ruido) */
+
+static int wave_peak[2] = { 0, 0 };
+
+static void draw_waveform(const short *audio, int frames)
+{
+   int i, ch;
+   int gain[2];
+   unsigned start;
+
+   for (i = 0; i < frames; i++)
+   {
+      unsigned p = wave_pos & (WAVE_RING - 1);
+      wave_ring[p * 2]     = audio[i * 2];
+      wave_ring[p * 2 + 1] = audio[i * 2 + 1];
+      wave_pos++;
+   }
+
+   start = wave_pos - WAVE_SPAN;
+   for (i = 0; i < WAVE_SPAN; i++)
+   {
+      unsigned p = (start + (unsigned)i) & (WAVE_RING - 1);
+      wave_lin[i * 2]     = wave_ring[p * 2];
+      wave_lin[i * 2 + 1] = wave_ring[p * 2 + 1];
+   }
+
+   for (ch = 0; ch < 2; ch++)
+   {
+      int pk = 0;
+      for (i = 0; i < WAVE_SPAN; i++)
+      {
+         int s = wave_lin[i * 2 + ch];
+         if (s < 0) s = -s;
+         if (s > pk) pk = s;
+      }
+      wave_peak[ch] -= wave_peak[ch] / 32;      /* decai devagar */
+      if (pk > wave_peak[ch]) wave_peak[ch] = pk;
+      pk = wave_peak[ch];
+      if (pk < WAVE_MIN_PEAK) pk = WAVE_MIN_PEAK;
+      gain[ch] = (WAVE_TARGET * 256) / pk;      /* ponto fixo 8.8 */
+      if (gain[ch] > WAVE_MAX_GAIN * 256) gain[ch] = WAVE_MAX_GAIN * 256;
+      if (gain[ch] < 256) gain[ch] = 256;
+   }
+
+   draw_wave_channel(wave_lin, WAVE_SPAN, 0, WAVE_TOP, WAVE_H, get_color(10, 28, 31), gain[0]);
+   draw_wave_channel(wave_lin, WAVE_SPAN, 1, WAVE_TOP + WAVE_H + WAVE_GAP, WAVE_H, get_color(28, 12, 27), gain[1]);
+}
+
 void retro_get_system_info(struct retro_system_info *info)
 {
    memset(info, 0, sizeof(*info));
    info->library_name = "Game Music Emulator";
    info->library_version = "v0.6.6";
    info->need_fullpath = true;
-   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip";
+   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|mod|s3m|xm|it|mp3|mid|midi|zip";
    info->block_extract = true;
 }
 
@@ -113,11 +487,11 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    memset(info, 0, sizeof(*info));
    info->timing.fps            = 60.0f;
    info->timing.sample_rate    = 44100;
-   info->geometry.base_width   = 320;
-   info->geometry.base_height  = 240;
-   info->geometry.max_width    = 320;
-   info->geometry.max_height   = 240;
-   info->geometry.aspect_ratio = 320.0f / 240.0f;
+   info->geometry.base_width   = 640;
+   info->geometry.base_height  = 480;
+   info->geometry.max_width    = 640;
+   info->geometry.max_height   = 480;
+   info->geometry.aspect_ratio = 640.0f / 480.0f;
    environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
 }
 
@@ -133,7 +507,7 @@ void retro_init(void)
 
    // the performance level is guide to frontend to give an idea of how intensive this core is to run
    environ_cb(RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL, &level);
-   framebuffer = create_surface(320,240,2);
+   framebuffer = create_surface(640,480,2);
 }
 
 // End of retrolib
@@ -151,12 +525,19 @@ void retro_reset(void)
 }
 
 // Run a single frame
+/* toque curto (< ~0,3 s a 60 fps) troca de faixa; segurar mais que isso vira avanco/volta acelerada */
+#define SCAN_HOLD_FRAMES 18
+static int l_hold_frames = 0;
+static int r_hold_frames = 0;
+
 void retro_run(void)
 {
    uint16_t input = 0;
    uint16_t realinput = 0;
    int i;
    short *audio;
+   uint16_t released = 0;
+   int scan_dir = 0;
 
    // input handling
    input_poll_cb();
@@ -166,25 +547,50 @@ void retro_run(void)
          realinput |= 1<<i;
    }
    input = realinput & ~previnput;
+   released = previnput & ~realinput;
    previnput = realinput;
 
-   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_L))
-      prev_track();
+   /* L/R: toque curto troca de faixa (ao soltar); segurando vira voltar/avancar acelerado */
+   if(released & (1<<RETRO_DEVICE_ID_JOYPAD_L))
+   {
+      if(l_hold_frames < SCAN_HOLD_FRAMES)
+         prev_track();
+      l_hold_frames = 0;
+   }
+   else if((realinput & (1<<RETRO_DEVICE_ID_JOYPAD_L)) && l_hold_frames < 100000)
+      l_hold_frames++;
 
-   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_R))
-      next_track();
+   if(released & (1<<RETRO_DEVICE_ID_JOYPAD_R))
+   {
+      if(r_hold_frames < SCAN_HOLD_FRAMES)
+         next_track();
+      r_hold_frames = 0;
+   }
+   else if((realinput & (1<<RETRO_DEVICE_ID_JOYPAD_R)) && r_hold_frames < 100000)
+      r_hold_frames++;
+
+   {
+      int l_scan = (realinput & (1<<RETRO_DEVICE_ID_JOYPAD_L)) && l_hold_frames >= SCAN_HOLD_FRAMES;
+      int r_scan = (realinput & (1<<RETRO_DEVICE_ID_JOYPAD_R)) && r_hold_frames >= SCAN_HOLD_FRAMES;
+      if(r_scan && !l_scan)
+         scan_dir = 1;
+      else if(l_scan && !r_scan)
+         scan_dir = -1;
+   }
 
    if(input & (1<<RETRO_DEVICE_ID_JOYPAD_START))
       play_pause();
 
    //audio primeiro, para o espectro usar os samples deste frame
-   audio = play();
+   audio = play_scan(scan_dir);
+   led_update(audio, 1470);
    spectrum_push(audio, 735);
    spectrum_update();
 
    //graphic handling
    spectrum_draw_background(framebuffer);
    draw_ui();
+   draw_waveform(audio, 735);
    spectrum_draw_bars(framebuffer);
    video_cb(framebuffer->pixel_data, framebuffer->width, framebuffer->height, framebuffer->bytes_per_pixel * framebuffer->width);
    //audio handling
@@ -194,6 +600,9 @@ void retro_run(void)
 // File Loading
 bool retro_load_game(const struct retro_game_info *info)
 {
+   const char *sysdir = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysdir) && sysdir)
+      set_system_dir(sysdir);
    if (info && open_file(info->path, 44100))
       return true;
    return false;

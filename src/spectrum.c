@@ -2,16 +2,18 @@
 #include <stdint.h>
 #include "graphics.h"
 #include "spectrum.h"
+#include <string.h>
+#include "background.h"
 
 #define FFT_N      2048
-#define BANDS      32
+#define BANDS      36
 #define SEGS       15
-#define BAR_W      6
-#define BAR_PITCH  8
+#define BAR_W      12
+#define BAR_PITCH  16
 #define BAR_X0     32
-#define BAR_BASE   214
-#define SEG_H      3
-#define SEG_PITCH  4
+#define BAR_BASE   390
+#define SEG_H      6
+#define SEG_PITCH  8
 #define PI_F       3.14159265f
 
 static float ring[FFT_N];
@@ -153,22 +155,27 @@ static void fill_rect(surface *surf, int x, int y, int w, int h, unsigned short 
 
 void spectrum_draw_background(surface *surf)
 {
-   int i;
-   for (i = 0; i < 12; i++)
+   static unsigned short cache[BG_W * BG_H];
+   static int ready = 0;
+   if (!ready)
    {
-      int r = 5 + (1 - 5) * i / 11;
-      int g = 5 + (6 - 5) * i / 11;
-      int b = 10 + (7 - 10) * i / 11;
-      fill_rect(surf, 0, i * 20, 320, 20, get_color(r, g, b));
+      int i;
+      for (i = 0; i < BG_W * BG_H; i++)
+      {
+         unsigned short v = bg_pixels[i];
+         cache[i] = get_color((v >> 11) & 31, (v >> 5) & 63, v & 31);
+      }
+      ready = 1;
    }
+   memcpy(surf->pixel_data, cache, sizeof(cache));
 }
 
 void spectrum_draw_bars(surface *surf)
 {
    int b, s;
-   unsigned short green  = get_color(6, 58, 12);
-   unsigned short yellow = get_color(31, 58, 0);
-   unsigned short red    = get_color(31, 12, 4);
+   unsigned short green  = get_color(8, 56, 17);
+   unsigned short yellow = get_color(30, 50, 6);
+   unsigned short red    = get_color(29, 22, 10);
    unsigned short white  = get_color(31, 63, 31);
 
    for (b = 0; b < BANDS; b++)
@@ -182,6 +189,6 @@ void spectrum_draw_bars(surface *surf)
                    s < 9 ? green : (s < 12 ? yellow : red));
 
       if (pk >= n && pk < SEGS)
-         fill_rect(surf, x, BAR_BASE - pk * SEG_PITCH - SEG_H, BAR_W, SEG_H, white);
+         fill_rect(surf, x, BAR_BASE - pk * SEG_PITCH - SEG_H, BAR_W, 2, white);
    }
 }

@@ -8,11 +8,16 @@ bool is_emu_loaded(void);
 
 bool open_file(const char *path, long sample_rate);
 
+void set_system_dir(const char *dir);
+
 void close_file(void);
 
 void start_track(int track);
 
 short *play(void);
+
+/* dir: 0 = normal, 1 = avanco rapido (R segurado), -1 = voltar acelerado (L segurado) */
+short *play_scan(int dir);
 
 void next_track(void);
 
@@ -29,5 +34,17 @@ char *get_track_position(char *buf);
 int get_track_elapsed_frames(void);
 
 void play_pause(void);
+
+char *get_system_line(char *buf);
+
+char *get_track_label(char *buf);
+
+char *get_time_text(char *buf);
+
+char *get_rate_text(char *buf);
+
+int get_track_progress_permille(void);
+
+char *get_chip_text(char *buf);
 
 #endif

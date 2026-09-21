@@ -114,6 +114,81 @@ SOURCES_C += \
 endif
 INCFLAGS += -I$(DEPS_DIR)/libvgm
 
+# ---- Munt / mt32emu (emulacao do Roland MT-32), sem dependencias externas ----
+MUNT_DIR := $(DEPS_DIR)/munt/mt32emu/src
+CXXFLAGS += -DMT32EMU_WITH_INTERNAL_RESAMPLER -DMT32EMU_WITH_STD_SNPRINTF
+SOURCES_CXX += $(CORE_DIR)/src/midi_backend.cpp \
+                $(MUNT_DIR)/Analog.cpp \
+                $(MUNT_DIR)/BReverbModel.cpp \
+                $(MUNT_DIR)/Display.cpp \
+                $(MUNT_DIR)/File.cpp \
+                $(MUNT_DIR)/FileStream.cpp \
+                $(MUNT_DIR)/LA32FloatWaveGenerator.cpp \
+                $(MUNT_DIR)/LA32Ramp.cpp \
+                $(MUNT_DIR)/LA32WaveGenerator.cpp \
+                $(MUNT_DIR)/MidiStreamParser.cpp \
+                $(MUNT_DIR)/Part.cpp \
+                $(MUNT_DIR)/Partial.cpp \
+                $(MUNT_DIR)/PartialManager.cpp \
+                $(MUNT_DIR)/Poly.cpp \
+                $(MUNT_DIR)/ROMInfo.cpp \
+                $(MUNT_DIR)/SampleRateConverter.cpp \
+                $(MUNT_DIR)/Synth.cpp \
+                $(MUNT_DIR)/TVA.cpp \
+                $(MUNT_DIR)/TVF.cpp \
+                $(MUNT_DIR)/TVP.cpp \
+                $(MUNT_DIR)/Tables.cpp \
+                $(MUNT_DIR)/c_interface/c_interface.cpp \
+                $(MUNT_DIR)/sha1/sha1.cpp \
+                $(MUNT_DIR)/srchelper/InternalResampler.cpp \
+                $(MUNT_DIR)/srchelper/srctools/src/FIRResampler.cpp \
+                $(MUNT_DIR)/srchelper/srctools/src/IIR2xResampler.cpp \
+                $(MUNT_DIR)/srchelper/srctools/src/LinearResampler.cpp \
+                $(MUNT_DIR)/srchelper/srctools/src/ResamplerModel.cpp \
+                $(MUNT_DIR)/srchelper/srctools/src/SincResampler.cpp
+
+# ---- dr_mp3 (decodificador MP3, dominio publico) ----
+INCFLAGS += -I$(DEPS_DIR)/dr_libs
+SOURCES_C += $(CORE_DIR)/src/mp3_backend.c
+
+# ---- libxmp (MOD/S3M/XM/IT), perfil lite: mesmas fontes e defines da libxmp-lite ----
+XMP_DIR := $(DEPS_DIR)/libxmp
+INCFLAGS += -I$(XMP_DIR)/include
+CFLAGS += -DLIBXMP_CORE_PLAYER -DLIBXMP_STATIC -DLIBXMP_PAULA_SIMULATOR
+SOURCES_C += $(CORE_DIR)/src/xmp_backend.c \
+                 $(XMP_DIR)/src/virtual.c \
+                 $(XMP_DIR)/src/format.c \
+                 $(XMP_DIR)/src/period.c \
+                 $(XMP_DIR)/src/player.c \
+                 $(XMP_DIR)/src/read_event.c \
+                 $(XMP_DIR)/src/misc.c \
+                 $(XMP_DIR)/src/dataio.c \
+                 $(XMP_DIR)/src/lfo.c \
+                 $(XMP_DIR)/src/scan.c \
+                 $(XMP_DIR)/src/control.c \
+                 $(XMP_DIR)/src/filter.c \
+                 $(XMP_DIR)/src/effects.c \
+                 $(XMP_DIR)/src/flow.c \
+                 $(XMP_DIR)/src/mixer.c \
+                 $(XMP_DIR)/src/mix_all.c \
+                 $(XMP_DIR)/src/mix_paula.c \
+                 $(XMP_DIR)/src/load_helpers.c \
+                 $(XMP_DIR)/src/load.c \
+                 $(XMP_DIR)/src/filetype.c \
+                 $(XMP_DIR)/src/hio.c \
+                 $(XMP_DIR)/src/smix.c \
+                 $(XMP_DIR)/src/memio.c \
+                 $(XMP_DIR)/src/rng.c \
+                 $(XMP_DIR)/src/win32.c \
+                 $(XMP_DIR)/src/loaders/common.c \
+                 $(XMP_DIR)/src/loaders/itsex.c \
+                 $(XMP_DIR)/src/loaders/sample.c \
+                 $(XMP_DIR)/src/loaders/xm_load.c \
+                 $(XMP_DIR)/src/loaders/mod_load.c \
+                 $(XMP_DIR)/src/loaders/s3m_load.c \
+                 $(XMP_DIR)/src/loaders/it_load.c
+
+
 ifeq ($(platform),win)
 LIBVGM_BUILD = $(DEPS_DIR)/libvgm/build-win
 else

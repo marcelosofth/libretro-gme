@@ -1,0 +1,95 @@
+=== retro_run ===
+void retro_run(void)
+{
+   uint16_t input = 0;
+   uint16_t realinput = 0;
+   int i;
+   short *audio;
+
+   // input handling
+   input_poll_cb();
+   for(i=0;i<16;i++)
+   {
+      if(input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, i))
+         realinput |= 1<<i;
+   }
+   input = realinput & ~previnput;
+   previnput = realinput;
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_L))
+      prev_track();
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_R))
+      next_track();
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_START))
+      play_pause();
+
+   //audio primeiro, para o espectro usar os samples deste frame
+   audio = play();
+   led_update(audio, 1470);
+   spectrum_push(audio, 735);
+   spectrum_update();
+
+   //graphic handling
+   spectrum_draw_background(framebuffer);
+   draw_ui();
+   draw_waveform(audio, 735);
+   spectrum_draw_bars(framebuffer);
+   video_cb(framebuffer->pixel_data, framebuffer->width, framebuffer->height, framebuffer->bytes_per_pixel * framebuffer->width);
+   //audio handling
+   audio_batch_cb(audio,735);
+}
+=== JOYPAD ===
+src/libretro.c:539:      if(input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, i))
+src/libretro.c:545:   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_L))
+src/libretro.c:548:   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_R))
+src/libretro.c:551:   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_START))
+=== player.h ===
+#ifndef GME_LIBRETRO_PLAYER_H__
+#define GME_LIBRETRO_PLAYER_H__
+#include <stdlib.h>
+#include <boolean.h>
+#include "gme.h"
+
+bool is_emu_loaded(void);
+
+bool open_file(const char *path, long sample_rate);
+
+void set_system_dir(const char *dir);
+
+void close_file(void);
+
+void start_track(int track);
+
+short *play(void);
+
+void next_track(void);
+
+void prev_track(void);
+
+char *get_game_name(char *buf);
+
+char *get_track_count(char *buf);
+
+char *get_song_name(char *buf);
+
+char *get_track_position(char *buf);
+
+int get_track_elapsed_frames(void);
+
+void play_pause(void);
+
+char *get_system_line(char *buf);
+
+char *get_track_label(char *buf);
+
+char *get_time_text(char *buf);
+
+char *get_rate_text(char *buf);
+
+int get_track_progress_permille(void);
+
+char *get_chip_text(char *buf);
+
+#endif

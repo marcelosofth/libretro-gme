@@ -10,6 +10,9 @@ typedef struct {
 	int length;
 	gme_type_t file_type;
 	int num_tracks;
+        int is_tracker;
+        int is_mp3;
+        int is_midi;
 } gme_file_data;
 
 typedef struct {
@@ -32,6 +35,9 @@ bool get_playlist(const char *path,playlist **dest_pl);
 bool get_playlist_gme_files(const char *path,gme_file_data*** dest_gme_files,int *num_file, int *num_tracks);
 bool get_gme_file_data(file_data *fd,gme_file_data **dest_gfd);
 bool get_track_data(Music_Emu* emu, int fileid, int trackid, char *filename, gme_track_data **dest_gtd);
+bool get_tracker_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd);
+bool get_mp3_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd);
+bool get_midi_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd);
 
 bool cleanup_playlist(playlist* pl);
 

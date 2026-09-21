@@ -33,3 +33,7 @@
 *.su
 
 build
+src/mt32_roms.inc
+deps/mt32rom/
+MT32_CONTROL.ROM
+MT32_PCM.ROM
