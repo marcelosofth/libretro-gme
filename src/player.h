@@ -47,4 +47,10 @@ int get_track_progress_permille(void);
 
 char *get_chip_text(char *buf);
 
+void toggle_loop(void);
+
+bool get_loop_enabled(void);
+
+bool get_is_playing(void);
+
 #endif

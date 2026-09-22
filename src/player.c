@@ -25,6 +25,7 @@ static bool use_vgm_ = false;
 static bool use_xmp_ = false;
 static bool use_mp3_ = false;
 static bool use_midi_ = false;
+static bool loop_enabled_ = false;
 static char system_dir_[512];
 static long sample_rate_;
 static int current_track;
@@ -298,7 +299,9 @@ short *play(void)
       {
          if (midi_backend_ended())
          {
-            if(current_track< (plist->num_tracks-1))
+            if (loop_enabled_)
+               start_track(current_track);
+            else if(current_track< (plist->num_tracks-1))
                start_track(++current_track);
             else
                is_playing_ = false;
@@ -310,7 +313,9 @@ short *play(void)
       {
          if (mp3_backend_ended())
          {
-            if(current_track< (plist->num_tracks-1))
+            if (loop_enabled_)
+               start_track(current_track);
+            else if(current_track< (plist->num_tracks-1))
                start_track(++current_track);
             else
                is_playing_ = false;
@@ -322,7 +327,9 @@ short *play(void)
       {
          if (xmp_backend_ended())
          {
-            if(current_track< (plist->num_tracks-1))
+            if (loop_enabled_)
+               start_track(current_track);
+            else if(current_track< (plist->num_tracks-1))
                start_track(++current_track);
             else
                is_playing_ = false;
@@ -334,7 +341,9 @@ short *play(void)
       {
          if (vgm_backend_ended())
          {
-            if(current_track< (plist->num_tracks-1))
+            if (loop_enabled_)
+               start_track(current_track);
+            else if(current_track< (plist->num_tracks-1))
                start_track(++current_track);
             else
                is_playing_ = false;
@@ -344,7 +353,9 @@ short *play(void)
       }
       else if(gme_track_ended(emu))
       {
-         if(current_track< (plist->num_tracks-1))
+         if (loop_enabled_)
+            start_track(current_track);
+         else if(current_track< (plist->num_tracks-1))
             start_track(++current_track);
          else
             is_playing_ = false;
@@ -557,6 +568,21 @@ void play_pause(void)
    is_playing_ = !is_playing_;
 }
 
+void toggle_loop(void)
+{
+   loop_enabled_ = !loop_enabled_;
+}
+
+bool get_loop_enabled(void)
+{
+   return loop_enabled_;
+}
+
+bool get_is_playing(void)
+{
+   return is_playing_;
+}
+
 
 /* ---- textos do novo layout ---- */
 
@@ -626,7 +652,7 @@ char *get_time_text(char *buf)
    {
       long total   = track->track_length / 1000;
       long elapsed = (backend_elapsed_ms()) / 1000;
-      sprintf(buf, "%02ld:%02ld / %02ld:%02ld", elapsed / 60, elapsed % 60, total / 60, total % 60);
+      sprintf(buf, "%02ld:%02ld/%02ld:%02ld", elapsed / 60, elapsed % 60, total / 60, total % 60);
    }
    else
       buf[0] = '\0';

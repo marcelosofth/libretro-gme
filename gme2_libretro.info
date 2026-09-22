@@ -1,20 +1,20 @@
 # Name displayed when the user is selecting the core:
-display_name = "Game Music Emu"
+display_name = "Game Music Emu 2"
 
 # Name of the authors who wrote the core:
 authors = "Blargg"
 
 # List of extensions the core supports:
-supported_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip"
+supported_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip|mp3|mod|mid|s3m|xm|it"
 
 # Name of the core:
-corename = "GME"
+corename = "GME2"
 
 # License of the cores source code:
 license = "LGPLv2, GPLv2"
 
 # Version of the core:
-display_version = "v0.6.6"
+display_version = "v1.2"
 
 # Whether or not the core requires an external file to work:
 supports_no_game = "false"

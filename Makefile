@@ -19,7 +19,7 @@ endif
 
 #set extension and lib path
 
-TARGET_NAME := gme
+TARGET_NAME := gme2
 
 SPACE :=
 SPACE := $(SPACE) $(SPACE)

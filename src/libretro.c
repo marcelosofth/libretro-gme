@@ -13,6 +13,8 @@
 // Static globals
 static surface *framebuffer = NULL;
 static uint16_t previnput = 0;
+static int l_active_ = 0;
+static int r_active_ = 0;
 
 // Callbacks
 
@@ -338,6 +340,92 @@ static void chip_draw_text(const char *text, int x, int y, int maxx)
    }
 }
 
+/* ---- barra de transporte: Prev / Stop / Play / Pause / Loop / Next ---- */
+
+static void draw_bar(int x, int y, int w, int h, unsigned short color)
+{
+   draw_shape(framebuffer, color, x, y, w, h);
+}
+
+/* triangulo generico: de x_tip (bico, altura 0) ate x_base (base, altura 2*half_h+1) */
+static void draw_tri(int x_tip, int x_base, int cy, int half_h, unsigned short color)
+{
+   int width = x_base - x_tip;
+   int steps = abs(width);
+   int i;
+   if (steps == 0)
+      return;
+   for (i = 0; i <= steps; i++)
+   {
+      int x = x_tip + (width >= 0 ? i : -i);
+      int h = (half_h * i) / steps;
+      int y;
+      for (y = -h; y <= h; y++)
+         set_pixel(framebuffer, x, cy + y, color);
+   }
+}
+
+static void draw_loop_icon(int cx, int cy, int r, unsigned short color)
+{
+   int dx, dy;
+   for (dy = -r; dy <= r; dy++)
+      for (dx = -r; dx <= r; dx++)
+      {
+         int d2 = dx * dx + dy * dy;
+         if (d2 <= r * r && d2 > (r - 3) * (r - 3))
+         {
+            if (dy > r / 3 && dx > 0) /* abertura para a seta */
+               continue;
+            set_pixel(framebuffer, cx + dx, cy + dy, color);
+         }
+      }
+   draw_tri(cx + r - 8, cx + r - 2, cy + r - 4, 4, color);
+}
+
+#define TRANS_Y  449
+#define ICON_HH  6   /* meia-altura padrao dos icones (altura total 12, igual a foto) */
+
+static void draw_transport_bar(void)
+{
+   static const int off[6] = { -110, -57, -18, 18, 57, 110 };
+   int cx = (UI_LEFT + UI_RIGHT) / 2;
+   int cy = TRANS_Y;
+   int ix;
+   unsigned short dim  = get_color(9, 20, 12);
+   unsigned short lit  = get_color(8, 56, 17);
+   bool playing  = get_is_playing();
+   bool loop_on  = get_loop_enabled();
+   unsigned short prev_col = l_active_ ? lit : dim;
+   unsigned short next_col = r_active_ ? lit : dim;
+
+   /* prev: barra + triangulo apontando p/ esquerda */
+   ix = cx + off[0];
+   draw_bar(ix - 6, cy - ICON_HH, 2, ICON_HH * 2, prev_col);
+   draw_tri(ix - 4, ix + 5, cy, ICON_HH, prev_col);
+
+   /* stop: quadrado */
+   ix = cx + off[1];
+   draw_bar(ix - 6, cy - 6, 12, 12, !playing ? lit : dim);
+
+   /* play: triangulo apontando p/ direita */
+   ix = cx + off[2];
+   draw_tri(ix + 5, ix - 5, cy, ICON_HH, playing ? lit : dim);
+
+   /* pause: duas barras */
+   ix = cx + off[3];
+   draw_bar(ix - 4, cy - ICON_HH, 2, ICON_HH * 2, !playing ? lit : dim);
+   draw_bar(ix + 2, cy - ICON_HH, 2, ICON_HH * 2, !playing ? lit : dim);
+
+   /* loop */
+   ix = cx + off[4];
+   draw_loop_icon(ix, cy, 8, loop_on ? lit : dim);
+
+   /* next: triangulo apontando p/ direita + barra */
+   ix = cx + off[5];
+   draw_tri(ix + 3, ix - 5, cy, ICON_HH, next_col);
+   draw_bar(ix + 5, cy - ICON_HH, 2, ICON_HH * 2, next_col);
+}
+
 static void draw_ui(void)
 {
    char message[512];
@@ -376,6 +464,8 @@ static void draw_ui(void)
    get_rate_text(message);
    w = text_width_prop(message);
    draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
+
+   draw_transport_bar();
 }
 
 /* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
@@ -470,8 +560,8 @@ static void draw_waveform(const short *audio, int frames)
 void retro_get_system_info(struct retro_system_info *info)
 {
    memset(info, 0, sizeof(*info));
-   info->library_name = "Game Music Emulator";
-   info->library_version = "v0.6.6";
+   info->library_name = "Game Music Emu 2";
+   info->library_version = "v1.2";
    info->need_fullpath = true;
    info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|mod|s3m|xm|it|mp3|mid|midi|zip";
    info->block_extract = true;
@@ -580,6 +670,12 @@ void retro_run(void)
 
    if(input & (1<<RETRO_DEVICE_ID_JOYPAD_START))
       play_pause();
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_A))
+      toggle_loop();
+
+   l_active_ = (realinput & (1<<RETRO_DEVICE_ID_JOYPAD_L)) ? 1 : 0;
+   r_active_ = (realinput & (1<<RETRO_DEVICE_ID_JOYPAD_R)) ? 1 : 0;
 
    //audio primeiro, para o espectro usar os samples deste frame
    audio = play_scan(scan_dir);
