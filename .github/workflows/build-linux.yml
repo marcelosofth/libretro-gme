@@ -37,7 +37,7 @@ jobs:
       - name: Baixar ROMs do MT-32 (repo privado)
         run: |
           git clone --depth 1 \
-            https://x-access-token:${{ secrets.MT32_ROMS_TOKEN }}@github.com/marcelosofth/gme2-mt32-roms.git \
+            https://x-access-token:${{ secrets.MT32_ROMS_PAT }}@github.com/marcelosofth/gme2-mt32-roms.git \
             deps/mt32rom
 
       - name: Gerar headers embutidos (MT-32 ROMs + SoundFonts)
