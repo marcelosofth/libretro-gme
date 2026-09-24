@@ -1,0 +1,1421 @@
+src/libretro.c.bak_hdr-168-{
+src/libretro.c.bak_hdr-169-   int x0, x1;
+src/libretro.c.bak_hdr-170-   for (; *text && x < maxx; text++)
+src/libretro.c.bak_hdr-171-   {
+src/libretro.c.bak_hdr-172-      unsigned char ch = (unsigned char)*text;
+src/libretro.c.bak_hdr-173-      glyph_extent(ch, &x0, &x1);
+src/libretro.c.bak_hdr-174-      if (x1 < 0)
+src/libretro.c.bak_hdr-175-      {
+src/libretro.c.bak_hdr-176-         x += 4 * 2;
+src/libretro.c.bak_hdr-177-         continue;
+src/libretro.c.bak_hdr-178-      }
+src/libretro.c.bak_hdr-179-      put_glyph(ch, x - x0 * 2, y, color, 0, maxx);
+src/libretro.c.bak_hdr-180-      x += (x1 - x0 + 2) * 2;
+src/libretro.c.bak_hdr-181-   }
+src/libretro.c.bak_hdr-182-}
+src/libretro.c.bak_hdr-183-
+src/libretro.c.bak_hdr-184-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c.bak_hdr-185-static int led_level = 0;
+src/libretro.c.bak_hdr-186-
+src/libretro.c.bak_hdr-187-static void led_update(const short *audio, int n)
+src/libretro.c.bak_hdr-188-{
+src/libretro.c.bak_hdr-189-   int i, pk = 0, cur;
+src/libretro.c.bak_hdr-190-   for (i = 0; i < n; i++)
+src/libretro.c.bak_hdr-191-   {
+src/libretro.c.bak_hdr-192-      int v = audio[i];
+src/libretro.c.bak_hdr-193-      if (v < 0) v = -v;
+src/libretro.c.bak_hdr-194-      if (v > pk) pk = v;
+src/libretro.c.bak_hdr-195-   }
+src/libretro.c.bak_hdr-196-   cur = pk / 40;
+src/libretro.c.bak_hdr-197-   if (cur > 255) cur = 255;
+src/libretro.c.bak_hdr-198-   led_level = (led_level * 192) >> 8;
+src/libretro.c.bak_hdr-199-   if (cur > led_level)
+src/libretro.c.bak_hdr-200-      led_level = cur;
+src/libretro.c.bak_hdr-201-}
+src/libretro.c.bak_hdr-202-
+src/libretro.c.bak_hdr-203-static void draw_led(int cx, int cy)
+src/libretro.c.bak_hdr-204-{
+src/libretro.c.bak_hdr-205-   int dx, dy;
+src/libretro.c.bak_hdr-206-   int t = led_level;
+src/libretro.c.bak_hdr-207-   int r = 8 + (23 * t) / 255, g = 3 + (9 * t) / 255, b = 2 + (5 * t) / 255;
+src/libretro.c.bak_hdr-208-   unsigned short col;
+src/libretro.c.bak_hdr-209-   if (t < 48) /* em repouso/fraco: escurece; acima disso fica igual */
+src/libretro.c.bak_hdr-210-   {
+src/libretro.c.bak_hdr-211-      r = 3 + ((r - 3) * t) / 48;
+src/libretro.c.bak_hdr-212-      g = 1 + ((g - 1) * t) / 48;
+src/libretro.c.bak_hdr-213-      b = 1 + ((b - 1) * t) / 48;
+src/libretro.c.bak_hdr-214-   }
+src/libretro.c.bak_hdr-215-   col = get_color(r, g, b);
+src/libretro.c.bak_hdr-216-   for (dy = -6; dy <= 6; dy++)
+src/libretro.c.bak_hdr-217-      for (dx = -6; dx <= 6; dx++)
+src/libretro.c.bak_hdr-218-         if (dx * dx + dy * dy <= 40)
+src/libretro.c.bak_hdr-219-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c.bak_hdr-220-   if (t > 200)
+src/libretro.c.bak_hdr-221-      set_pixel(framebuffer, cx - 2, cy - 2, get_color(31, 40, 30));
+src/libretro.c.bak_hdr-222-}
+src/libretro.c.bak_hdr-223-
+src/libretro.c.bak_hdr-224-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c.bak_hdr-225-#define UI_LEFT   32
+src/libretro.c.bak_hdr-226-#define UI_RIGHT  608
+src/libretro.c.bak_hdr-227-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c.bak_hdr-228-
+src/libretro.c.bak_hdr-229-static void draw_ui(void)
+src/libretro.c.bak_hdr-230-{
+src/libretro.c.bak_hdr-231-   char message[512];
+src/libretro.c.bak_hdr-232-   int w, prog;
+src/libretro.c.bak_hdr-233-
+src/libretro.c.bak_hdr-234-   /* cabecalho */
+src/libretro.c.bak_hdr-235-   draw_text_scroll(get_song_name(message), UI_LEFT, 24, 416, get_color(30, 58, 25));
+src/libretro.c.bak_hdr-236-
+src/libretro.c.bak_hdr-237-   get_track_label(message);
+src/libretro.c.bak_hdr-238-   w = text_width_prop(message);
+src/libretro.c.bak_hdr-239-   draw_text_prop(message, UI_RIGHT - w, 24, get_color(28, 56, 28));
+src/libretro.c.bak_hdr-240-
+src/libretro.c.bak_hdr-241-   draw_text_scroll(get_game_name(message), UI_LEFT, 60, 384, get_color(19, 36, 27));
+src/libretro.c.bak_hdr-242-
+src/libretro.c.bak_hdr-243-   get_system_line(message);
+src/libretro.c.bak_hdr-244-   draw_text_prop_clip(message, UI_LEFT, 96, get_color(15, 33, 21), 416);
+src/libretro.c.bak_hdr-245-
+src/libretro.c.bak_hdr-246-   /* SYSTEM: (led) chip de audio */
+src/libretro.c.bak_hdr-247-   {
+src/libretro.c.bak_hdr:248:      int lx = UI_LEFT + text_width_prop("CHIP:") + 16;
+src/libretro.c.bak_hdr:249:      draw_text_prop("CHIP:", UI_LEFT, 132, get_color(15, 33, 21));
+src/libretro.c.bak_hdr-250-      draw_led(lx + 6, 138);
+src/libretro.c.bak_hdr-251-      draw_text_prop_clip(get_chip_text(message), lx + 24, 132, get_color(27, 54, 29), 416);
+src/libretro.c.bak_hdr-252-   }
+src/libretro.c.bak_hdr-253-
+src/libretro.c.bak_hdr-254-   /* barra de progresso (proxima ao espectro, cuja base fica em y=408) */
+src/libretro.c.bak_hdr-255-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 413, UI_W, 12);
+src/libretro.c.bak_hdr-256-   prog = get_track_progress_permille();
+src/libretro.c.bak_hdr-257-   if (prog > 0)
+src/libretro.c.bak_hdr-258-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 413, (UI_W * prog) / 1000, 12);
+src/libretro.c.bak_hdr-259-
+src/libretro.c.bak_hdr-260-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c.bak_hdr-261-   draw_text_prop(get_time_text(message), UI_LEFT, 442, get_color(27, 54, 29));
+src/libretro.c.bak_hdr-262-
+src/libretro.c.bak_hdr-263-   get_rate_text(message);
+src/libretro.c.bak_hdr-264-   w = text_width_prop(message);
+src/libretro.c.bak_hdr-265-   draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
+src/libretro.c.bak_hdr-266-}
+src/libretro.c.bak_hdr-267-
+src/libretro.c.bak_hdr-268-/* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
+src/libretro.c.bak_hdr-269-#define WAVE_TOP  167
+src/libretro.c.bak_hdr-270-#define WAVE_H    48
+src/libretro.c.bak_hdr-271-#define WAVE_GAP  10
+src/libretro.c.bak_hdr-272-
+src/libretro.c.bak_hdr-273-static void draw_wave_channel(const short *audio, int frames, int offset,
+src/libretro.c.bak_hdr-274-                               int y0, int h, unsigned short color, int gain_q8)
+src/libretro.c.bak_hdr-275-{
+src/libretro.c.bak_hdr-276-   int x, px = -1, py = 0;
+src/libretro.c.bak_hdr-277-   int mid = y0 + h / 2;
+src/libretro.c.bak_hdr-278-
+src/libretro.c.bak_hdr-279-   draw_line(framebuffer, get_color(4, 7, 8), UI_LEFT, mid, UI_RIGHT, mid);
+src/libretro.c.bak_hdr-280-
+src/libretro.c.bak_hdr-281-   for (x = 0; x < UI_W; x++)
+src/libretro.c.bak_hdr-282-   {
+src/libretro.c.bak_hdr-283-      int idx = (x * frames) / UI_W;
+src/libretro.c.bak_hdr-284-      int s   = audio[idx * 2 + offset];
+src/libretro.c.bak_hdr-285-      int v = (s * gain_q8) >> 8;
+src/libretro.c.bak_hdr-286-      int y = mid - (v * (h / 2)) / 32768;
+src/libretro.c.bak_hdr-287-      if (y < y0)         y = y0;
+src/libretro.c.bak_hdr-288-      if (y >= y0 + h)     y = y0 + h - 1;
+src/libretro.c.bak_hdr-289-      if (px >= 0)
+src/libretro.c.bak_hdr-290-         draw_line(framebuffer, color, UI_LEFT + px, py, UI_LEFT + x, y);
+src/libretro.c.bak_hdr-291-      px = x;
+src/libretro.c.bak_hdr-292-      py = y;
+src/libretro.c.bak_hdr-293-   }
+src/libretro.c.bak_hdr-294-}
+src/libretro.c.bak_hdr-295-
+src/libretro.c.bak_hdr-296-/* Janela do osciloscopio: WAVE_SPAN amostras (por canal) mais recentes.
+src/libretro.c.bak_hdr-297- * 735 = 1 quadro (~16,7 ms); maior = mais oscilacoes visiveis na tela.
+src/libretro.c.bak_hdr-298- * WAVE_RING deve ser potencia de 2 e maior que WAVE_SPAN. */
+src/libretro.c.bak_hdr-299-#define WAVE_SPAN 1470
+src/libretro.c.bak_hdr-300-#define WAVE_RING 8192
+src/libretro.c.bak_hdr-301-
+src/libretro.c.bak_hdr-302-static short wave_ring[WAVE_RING * 2];
+src/libretro.c.bak_hdr-303-static short wave_lin[WAVE_SPAN * 2];
+src/libretro.c.bak_hdr-304-static unsigned wave_pos = 0;
+src/libretro.c.bak_hdr-305-
+src/libretro.c.bak_hdr-306-/* Ganho automatico do osciloscopio (mais movimento nas ondas) */
+src/libretro.c.bak_hdr-307-#define WAVE_TARGET   28000   /* pico alvo (max 32767) */
+src/libretro.c.bak_hdr-308-#define WAVE_MAX_GAIN 12      /* ganho maximo (x) */
+src/libretro.c.bak_hdr-309-#define WAVE_MIN_PEAK 1500    /* abaixo disso nao amplia mais (evita ruido) */
+src/libretro.c.bak_hdr-310-
+src/libretro.c.bak_hdr-311-static int wave_peak[2] = { 0, 0 };
+src/libretro.c.bak_hdr-312-
+src/libretro.c.bak_hdr-313-static void draw_waveform(const short *audio, int frames)
+src/libretro.c.bak_hdr-314-{
+src/libretro.c.bak_hdr-315-   int i, ch;
+src/libretro.c.bak_hdr-316-   int gain[2];
+src/libretro.c.bak_hdr-317-   unsigned start;
+src/libretro.c.bak_hdr-318-
+src/libretro.c.bak_hdr-319-   for (i = 0; i < frames; i++)
+src/libretro.c.bak_hdr-320-   {
+src/libretro.c.bak_hdr-321-      unsigned p = wave_pos & (WAVE_RING - 1);
+src/libretro.c.bak_hdr-322-      wave_ring[p * 2]     = audio[i * 2];
+src/libretro.c.bak_hdr-323-      wave_ring[p * 2 + 1] = audio[i * 2 + 1];
+src/libretro.c.bak_hdr-324-      wave_pos++;
+src/libretro.c.bak_hdr-325-   }
+src/libretro.c.bak_hdr-326-
+src/libretro.c.bak_hdr-327-   start = wave_pos - WAVE_SPAN;
+src/libretro.c.bak_hdr-328-   for (i = 0; i < WAVE_SPAN; i++)
+src/libretro.c.bak_hdr-329-   {
+--
+src/libretro.c.bak_wave-168-{
+src/libretro.c.bak_wave-169-   int x0, x1;
+src/libretro.c.bak_wave-170-   for (; *text && x < maxx; text++)
+src/libretro.c.bak_wave-171-   {
+src/libretro.c.bak_wave-172-      unsigned char ch = (unsigned char)*text;
+src/libretro.c.bak_wave-173-      glyph_extent(ch, &x0, &x1);
+src/libretro.c.bak_wave-174-      if (x1 < 0)
+src/libretro.c.bak_wave-175-      {
+src/libretro.c.bak_wave-176-         x += 4 * 2;
+src/libretro.c.bak_wave-177-         continue;
+src/libretro.c.bak_wave-178-      }
+src/libretro.c.bak_wave-179-      put_glyph(ch, x - x0 * 2, y, color, 0, maxx);
+src/libretro.c.bak_wave-180-      x += (x1 - x0 + 2) * 2;
+src/libretro.c.bak_wave-181-   }
+src/libretro.c.bak_wave-182-}
+src/libretro.c.bak_wave-183-
+src/libretro.c.bak_wave-184-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c.bak_wave-185-static int led_level = 0;
+src/libretro.c.bak_wave-186-
+src/libretro.c.bak_wave-187-static void led_update(const short *audio, int n)
+src/libretro.c.bak_wave-188-{
+src/libretro.c.bak_wave-189-   int i, pk = 0, cur;
+src/libretro.c.bak_wave-190-   for (i = 0; i < n; i++)
+src/libretro.c.bak_wave-191-   {
+src/libretro.c.bak_wave-192-      int v = audio[i];
+src/libretro.c.bak_wave-193-      if (v < 0) v = -v;
+src/libretro.c.bak_wave-194-      if (v > pk) pk = v;
+src/libretro.c.bak_wave-195-   }
+src/libretro.c.bak_wave-196-   cur = pk / 40;
+src/libretro.c.bak_wave-197-   if (cur > 255) cur = 255;
+src/libretro.c.bak_wave-198-   led_level = (led_level * 192) >> 8;
+src/libretro.c.bak_wave-199-   if (cur > led_level)
+src/libretro.c.bak_wave-200-      led_level = cur;
+src/libretro.c.bak_wave-201-}
+src/libretro.c.bak_wave-202-
+src/libretro.c.bak_wave-203-static void draw_led(int cx, int cy)
+src/libretro.c.bak_wave-204-{
+src/libretro.c.bak_wave-205-   int dx, dy;
+src/libretro.c.bak_wave-206-   int t = led_level;
+src/libretro.c.bak_wave-207-   int r = 8 + (23 * t) / 255, g = 3 + (9 * t) / 255, b = 2 + (5 * t) / 255;
+src/libretro.c.bak_wave-208-   unsigned short col;
+src/libretro.c.bak_wave-209-   if (t < 48) /* em repouso/fraco: escurece; acima disso fica igual */
+src/libretro.c.bak_wave-210-   {
+src/libretro.c.bak_wave-211-      r = 3 + ((r - 3) * t) / 48;
+src/libretro.c.bak_wave-212-      g = 1 + ((g - 1) * t) / 48;
+src/libretro.c.bak_wave-213-      b = 1 + ((b - 1) * t) / 48;
+src/libretro.c.bak_wave-214-   }
+src/libretro.c.bak_wave-215-   col = get_color(r, g, b);
+src/libretro.c.bak_wave-216-   for (dy = -6; dy <= 6; dy++)
+src/libretro.c.bak_wave-217-      for (dx = -6; dx <= 6; dx++)
+src/libretro.c.bak_wave-218-         if (dx * dx + dy * dy <= 40)
+src/libretro.c.bak_wave-219-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c.bak_wave-220-   if (t > 200)
+src/libretro.c.bak_wave-221-      set_pixel(framebuffer, cx - 2, cy - 2, get_color(31, 40, 30));
+src/libretro.c.bak_wave-222-}
+src/libretro.c.bak_wave-223-
+src/libretro.c.bak_wave-224-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c.bak_wave-225-#define UI_LEFT   32
+src/libretro.c.bak_wave-226-#define UI_RIGHT  608
+src/libretro.c.bak_wave-227-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c.bak_wave-228-
+src/libretro.c.bak_wave-229-static void draw_ui(void)
+src/libretro.c.bak_wave-230-{
+src/libretro.c.bak_wave-231-   char message[512];
+src/libretro.c.bak_wave-232-   int w, prog;
+src/libretro.c.bak_wave-233-
+src/libretro.c.bak_wave-234-   /* cabecalho */
+src/libretro.c.bak_wave-235-   draw_text_scroll(get_song_name(message), UI_LEFT, 24, 416, get_color(30, 58, 25));
+src/libretro.c.bak_wave-236-
+src/libretro.c.bak_wave-237-   get_track_label(message);
+src/libretro.c.bak_wave-238-   w = text_width_prop(message);
+src/libretro.c.bak_wave-239-   draw_text_prop(message, UI_RIGHT - w, 24, get_color(28, 56, 28));
+src/libretro.c.bak_wave-240-
+src/libretro.c.bak_wave-241-   draw_text_scroll(get_game_name(message), UI_LEFT, 60, 384, get_color(19, 36, 27));
+src/libretro.c.bak_wave-242-
+src/libretro.c.bak_wave-243-   get_system_line(message);
+src/libretro.c.bak_wave-244-   draw_text_prop_clip(message, UI_LEFT, 96, get_color(15, 33, 21), 416);
+src/libretro.c.bak_wave-245-
+src/libretro.c.bak_wave-246-   /* SYSTEM: (led) chip de audio */
+src/libretro.c.bak_wave-247-   {
+src/libretro.c.bak_wave:248:      int lx = UI_LEFT + text_width_prop("CHIP:") + 16;
+src/libretro.c.bak_wave:249:      draw_text_prop("CHIP:", UI_LEFT, 132, get_color(15, 33, 21));
+src/libretro.c.bak_wave-250-      draw_led(lx + 6, 138);
+src/libretro.c.bak_wave-251-      draw_text_prop_clip(get_chip_text(message), lx + 24, 132, get_color(27, 54, 29), 416);
+src/libretro.c.bak_wave-252-   }
+src/libretro.c.bak_wave-253-
+src/libretro.c.bak_wave-254-   /* barra de progresso (proxima ao espectro, cuja base fica em y=408) */
+src/libretro.c.bak_wave-255-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 413, UI_W, 12);
+src/libretro.c.bak_wave-256-   prog = get_track_progress_permille();
+src/libretro.c.bak_wave-257-   if (prog > 0)
+src/libretro.c.bak_wave-258-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 413, (UI_W * prog) / 1000, 12);
+src/libretro.c.bak_wave-259-
+src/libretro.c.bak_wave-260-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c.bak_wave-261-   draw_text_prop(get_time_text(message), UI_LEFT, 442, get_color(27, 54, 29));
+src/libretro.c.bak_wave-262-
+src/libretro.c.bak_wave-263-   get_rate_text(message);
+src/libretro.c.bak_wave-264-   w = text_width_prop(message);
+src/libretro.c.bak_wave-265-   draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
+src/libretro.c.bak_wave-266-}
+src/libretro.c.bak_wave-267-
+src/libretro.c.bak_wave-268-/* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
+src/libretro.c.bak_wave-269-#define WAVE_TOP  167
+src/libretro.c.bak_wave-270-#define WAVE_H    48
+src/libretro.c.bak_wave-271-#define WAVE_GAP  10
+src/libretro.c.bak_wave-272-
+src/libretro.c.bak_wave-273-static void draw_wave_channel(const short *audio, int frames, int offset,
+src/libretro.c.bak_wave-274-                               int y0, int h, unsigned short color)
+src/libretro.c.bak_wave-275-{
+src/libretro.c.bak_wave-276-   int x, px = -1, py = 0;
+src/libretro.c.bak_wave-277-   int mid = y0 + h / 2;
+src/libretro.c.bak_wave-278-
+src/libretro.c.bak_wave-279-   draw_line(framebuffer, get_color(4, 7, 8), UI_LEFT, mid, UI_RIGHT, mid);
+src/libretro.c.bak_wave-280-
+src/libretro.c.bak_wave-281-   for (x = 0; x < UI_W; x++)
+src/libretro.c.bak_wave-282-   {
+src/libretro.c.bak_wave-283-      int idx = (x * frames) / UI_W;
+src/libretro.c.bak_wave-284-      int s   = audio[idx * 2 + offset];
+src/libretro.c.bak_wave-285-      int y   = mid - (s * (h / 2)) / 32768;
+src/libretro.c.bak_wave-286-      if (y < y0)         y = y0;
+src/libretro.c.bak_wave-287-      if (y >= y0 + h)     y = y0 + h - 1;
+src/libretro.c.bak_wave-288-      if (px >= 0)
+src/libretro.c.bak_wave-289-         draw_line(framebuffer, color, UI_LEFT + px, py, UI_LEFT + x, y);
+src/libretro.c.bak_wave-290-      px = x;
+src/libretro.c.bak_wave-291-      py = y;
+src/libretro.c.bak_wave-292-   }
+src/libretro.c.bak_wave-293-}
+src/libretro.c.bak_wave-294-
+src/libretro.c.bak_wave-295-static void draw_waveform(const short *audio, int frames)
+src/libretro.c.bak_wave-296-{
+src/libretro.c.bak_wave-297-   draw_wave_channel(audio, frames, 0, WAVE_TOP, WAVE_H, get_color(10, 28, 31));
+src/libretro.c.bak_wave-298-   draw_wave_channel(audio, frames, 1, WAVE_TOP + WAVE_H + WAVE_GAP, WAVE_H, get_color(28, 12, 27));
+src/libretro.c.bak_wave-299-}
+src/libretro.c.bak_wave-300-
+src/libretro.c.bak_wave-301-void retro_get_system_info(struct retro_system_info *info)
+src/libretro.c.bak_wave-302-{
+src/libretro.c.bak_wave-303-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_wave-304-   info->library_name = "Game Music Emulator";
+src/libretro.c.bak_wave-305-   info->library_version = "v0.6.6";
+src/libretro.c.bak_wave-306-   info->need_fullpath = true;
+src/libretro.c.bak_wave-307-   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip";
+src/libretro.c.bak_wave-308-   info->block_extract = true;
+src/libretro.c.bak_wave-309-}
+src/libretro.c.bak_wave-310-
+src/libretro.c.bak_wave-311-/*
+src/libretro.c.bak_wave-312- * Tell libretro about the AV system; the fps, sound sample rate and the
+src/libretro.c.bak_wave-313- * resolution of the display.
+src/libretro.c.bak_wave-314- */
+src/libretro.c.bak_wave-315-void retro_get_system_av_info(struct retro_system_av_info *info)
+src/libretro.c.bak_wave-316-{
+src/libretro.c.bak_wave-317-   int pixel_format = RETRO_PIXEL_FORMAT_RGB565;
+src/libretro.c.bak_wave-318-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_wave-319-   info->timing.fps            = 60.0f;
+src/libretro.c.bak_wave-320-   info->timing.sample_rate    = 44100;
+src/libretro.c.bak_wave-321-   info->geometry.base_width   = 640;
+src/libretro.c.bak_wave-322-   info->geometry.base_height  = 480;
+src/libretro.c.bak_wave-323-   info->geometry.max_width    = 640;
+src/libretro.c.bak_wave-324-   info->geometry.max_height   = 480;
+src/libretro.c.bak_wave-325-   info->geometry.aspect_ratio = 640.0f / 480.0f;
+src/libretro.c.bak_wave-326-   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
+src/libretro.c.bak_wave-327-}
+src/libretro.c.bak_wave-328-
+src/libretro.c.bak_wave-329-void retro_init(void)
+--
+src/libretro.c.bak_wave_gain-168-{
+src/libretro.c.bak_wave_gain-169-   int x0, x1;
+src/libretro.c.bak_wave_gain-170-   for (; *text && x < maxx; text++)
+src/libretro.c.bak_wave_gain-171-   {
+src/libretro.c.bak_wave_gain-172-      unsigned char ch = (unsigned char)*text;
+src/libretro.c.bak_wave_gain-173-      glyph_extent(ch, &x0, &x1);
+src/libretro.c.bak_wave_gain-174-      if (x1 < 0)
+src/libretro.c.bak_wave_gain-175-      {
+src/libretro.c.bak_wave_gain-176-         x += 4 * 2;
+src/libretro.c.bak_wave_gain-177-         continue;
+src/libretro.c.bak_wave_gain-178-      }
+src/libretro.c.bak_wave_gain-179-      put_glyph(ch, x - x0 * 2, y, color, 0, maxx);
+src/libretro.c.bak_wave_gain-180-      x += (x1 - x0 + 2) * 2;
+src/libretro.c.bak_wave_gain-181-   }
+src/libretro.c.bak_wave_gain-182-}
+src/libretro.c.bak_wave_gain-183-
+src/libretro.c.bak_wave_gain-184-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c.bak_wave_gain-185-static int led_level = 0;
+src/libretro.c.bak_wave_gain-186-
+src/libretro.c.bak_wave_gain-187-static void led_update(const short *audio, int n)
+src/libretro.c.bak_wave_gain-188-{
+src/libretro.c.bak_wave_gain-189-   int i, pk = 0, cur;
+src/libretro.c.bak_wave_gain-190-   for (i = 0; i < n; i++)
+src/libretro.c.bak_wave_gain-191-   {
+src/libretro.c.bak_wave_gain-192-      int v = audio[i];
+src/libretro.c.bak_wave_gain-193-      if (v < 0) v = -v;
+src/libretro.c.bak_wave_gain-194-      if (v > pk) pk = v;
+src/libretro.c.bak_wave_gain-195-   }
+src/libretro.c.bak_wave_gain-196-   cur = pk / 40;
+src/libretro.c.bak_wave_gain-197-   if (cur > 255) cur = 255;
+src/libretro.c.bak_wave_gain-198-   led_level = (led_level * 192) >> 8;
+src/libretro.c.bak_wave_gain-199-   if (cur > led_level)
+src/libretro.c.bak_wave_gain-200-      led_level = cur;
+src/libretro.c.bak_wave_gain-201-}
+src/libretro.c.bak_wave_gain-202-
+src/libretro.c.bak_wave_gain-203-static void draw_led(int cx, int cy)
+src/libretro.c.bak_wave_gain-204-{
+src/libretro.c.bak_wave_gain-205-   int dx, dy;
+src/libretro.c.bak_wave_gain-206-   int t = led_level;
+src/libretro.c.bak_wave_gain-207-   int r = 8 + (23 * t) / 255, g = 3 + (9 * t) / 255, b = 2 + (5 * t) / 255;
+src/libretro.c.bak_wave_gain-208-   unsigned short col;
+src/libretro.c.bak_wave_gain-209-   if (t < 48) /* em repouso/fraco: escurece; acima disso fica igual */
+src/libretro.c.bak_wave_gain-210-   {
+src/libretro.c.bak_wave_gain-211-      r = 3 + ((r - 3) * t) / 48;
+src/libretro.c.bak_wave_gain-212-      g = 1 + ((g - 1) * t) / 48;
+src/libretro.c.bak_wave_gain-213-      b = 1 + ((b - 1) * t) / 48;
+src/libretro.c.bak_wave_gain-214-   }
+src/libretro.c.bak_wave_gain-215-   col = get_color(r, g, b);
+src/libretro.c.bak_wave_gain-216-   for (dy = -6; dy <= 6; dy++)
+src/libretro.c.bak_wave_gain-217-      for (dx = -6; dx <= 6; dx++)
+src/libretro.c.bak_wave_gain-218-         if (dx * dx + dy * dy <= 40)
+src/libretro.c.bak_wave_gain-219-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c.bak_wave_gain-220-   if (t > 200)
+src/libretro.c.bak_wave_gain-221-      set_pixel(framebuffer, cx - 2, cy - 2, get_color(31, 40, 30));
+src/libretro.c.bak_wave_gain-222-}
+src/libretro.c.bak_wave_gain-223-
+src/libretro.c.bak_wave_gain-224-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c.bak_wave_gain-225-#define UI_LEFT   32
+src/libretro.c.bak_wave_gain-226-#define UI_RIGHT  608
+src/libretro.c.bak_wave_gain-227-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c.bak_wave_gain-228-
+src/libretro.c.bak_wave_gain-229-static void draw_ui(void)
+src/libretro.c.bak_wave_gain-230-{
+src/libretro.c.bak_wave_gain-231-   char message[512];
+src/libretro.c.bak_wave_gain-232-   int w, prog;
+src/libretro.c.bak_wave_gain-233-
+src/libretro.c.bak_wave_gain-234-   /* cabecalho */
+src/libretro.c.bak_wave_gain-235-   draw_text_scroll(get_song_name(message), UI_LEFT, 24, 416, get_color(30, 58, 25));
+src/libretro.c.bak_wave_gain-236-
+src/libretro.c.bak_wave_gain-237-   get_track_label(message);
+src/libretro.c.bak_wave_gain-238-   w = text_width_prop(message);
+src/libretro.c.bak_wave_gain-239-   draw_text_prop(message, UI_RIGHT - w, 24, get_color(28, 56, 28));
+src/libretro.c.bak_wave_gain-240-
+src/libretro.c.bak_wave_gain-241-   draw_text_scroll(get_game_name(message), UI_LEFT, 60, 384, get_color(19, 36, 27));
+src/libretro.c.bak_wave_gain-242-
+src/libretro.c.bak_wave_gain-243-   get_system_line(message);
+src/libretro.c.bak_wave_gain-244-   draw_text_prop_clip(message, UI_LEFT, 96, get_color(15, 33, 21), 416);
+src/libretro.c.bak_wave_gain-245-
+src/libretro.c.bak_wave_gain-246-   /* SYSTEM: (led) chip de audio */
+src/libretro.c.bak_wave_gain-247-   {
+src/libretro.c.bak_wave_gain:248:      int lx = UI_LEFT + text_width_prop("CHIP:") + 16;
+src/libretro.c.bak_wave_gain:249:      draw_text_prop("CHIP:", UI_LEFT, 132, get_color(15, 33, 21));
+src/libretro.c.bak_wave_gain-250-      draw_led(lx + 6, 138);
+src/libretro.c.bak_wave_gain-251-      draw_text_prop_clip(get_chip_text(message), lx + 24, 132, get_color(27, 54, 29), 416);
+src/libretro.c.bak_wave_gain-252-   }
+src/libretro.c.bak_wave_gain-253-
+src/libretro.c.bak_wave_gain-254-   /* barra de progresso (proxima ao espectro, cuja base fica em y=408) */
+src/libretro.c.bak_wave_gain-255-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 413, UI_W, 12);
+src/libretro.c.bak_wave_gain-256-   prog = get_track_progress_permille();
+src/libretro.c.bak_wave_gain-257-   if (prog > 0)
+src/libretro.c.bak_wave_gain-258-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 413, (UI_W * prog) / 1000, 12);
+src/libretro.c.bak_wave_gain-259-
+src/libretro.c.bak_wave_gain-260-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c.bak_wave_gain-261-   draw_text_prop(get_time_text(message), UI_LEFT, 442, get_color(27, 54, 29));
+src/libretro.c.bak_wave_gain-262-
+src/libretro.c.bak_wave_gain-263-   get_rate_text(message);
+src/libretro.c.bak_wave_gain-264-   w = text_width_prop(message);
+src/libretro.c.bak_wave_gain-265-   draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
+src/libretro.c.bak_wave_gain-266-}
+src/libretro.c.bak_wave_gain-267-
+src/libretro.c.bak_wave_gain-268-/* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
+src/libretro.c.bak_wave_gain-269-#define WAVE_TOP  167
+src/libretro.c.bak_wave_gain-270-#define WAVE_H    48
+src/libretro.c.bak_wave_gain-271-#define WAVE_GAP  10
+src/libretro.c.bak_wave_gain-272-
+src/libretro.c.bak_wave_gain-273-static void draw_wave_channel(const short *audio, int frames, int offset,
+src/libretro.c.bak_wave_gain-274-                               int y0, int h, unsigned short color)
+src/libretro.c.bak_wave_gain-275-{
+src/libretro.c.bak_wave_gain-276-   int x, px = -1, py = 0;
+src/libretro.c.bak_wave_gain-277-   int mid = y0 + h / 2;
+src/libretro.c.bak_wave_gain-278-
+src/libretro.c.bak_wave_gain-279-   draw_line(framebuffer, get_color(4, 7, 8), UI_LEFT, mid, UI_RIGHT, mid);
+src/libretro.c.bak_wave_gain-280-
+src/libretro.c.bak_wave_gain-281-   for (x = 0; x < UI_W; x++)
+src/libretro.c.bak_wave_gain-282-   {
+src/libretro.c.bak_wave_gain-283-      int idx = (x * frames) / UI_W;
+src/libretro.c.bak_wave_gain-284-      int s   = audio[idx * 2 + offset];
+src/libretro.c.bak_wave_gain-285-      int y   = mid - (s * (h / 2)) / 32768;
+src/libretro.c.bak_wave_gain-286-      if (y < y0)         y = y0;
+src/libretro.c.bak_wave_gain-287-      if (y >= y0 + h)     y = y0 + h - 1;
+src/libretro.c.bak_wave_gain-288-      if (px >= 0)
+src/libretro.c.bak_wave_gain-289-         draw_line(framebuffer, color, UI_LEFT + px, py, UI_LEFT + x, y);
+src/libretro.c.bak_wave_gain-290-      px = x;
+src/libretro.c.bak_wave_gain-291-      py = y;
+src/libretro.c.bak_wave_gain-292-   }
+src/libretro.c.bak_wave_gain-293-}
+src/libretro.c.bak_wave_gain-294-
+src/libretro.c.bak_wave_gain-295-/* Janela do osciloscopio: WAVE_SPAN amostras (por canal) mais recentes.
+src/libretro.c.bak_wave_gain-296- * 735 = 1 quadro (~16,7 ms); maior = mais oscilacoes visiveis na tela.
+src/libretro.c.bak_wave_gain-297- * WAVE_RING deve ser potencia de 2 e maior que WAVE_SPAN. */
+src/libretro.c.bak_wave_gain-298-#define WAVE_SPAN 1470
+src/libretro.c.bak_wave_gain-299-#define WAVE_RING 8192
+src/libretro.c.bak_wave_gain-300-
+src/libretro.c.bak_wave_gain-301-static short wave_ring[WAVE_RING * 2];
+src/libretro.c.bak_wave_gain-302-static short wave_lin[WAVE_SPAN * 2];
+src/libretro.c.bak_wave_gain-303-static unsigned wave_pos = 0;
+src/libretro.c.bak_wave_gain-304-
+src/libretro.c.bak_wave_gain-305-static void draw_waveform(const short *audio, int frames)
+src/libretro.c.bak_wave_gain-306-{
+src/libretro.c.bak_wave_gain-307-   int i;
+src/libretro.c.bak_wave_gain-308-   unsigned start;
+src/libretro.c.bak_wave_gain-309-
+src/libretro.c.bak_wave_gain-310-   for (i = 0; i < frames; i++)
+src/libretro.c.bak_wave_gain-311-   {
+src/libretro.c.bak_wave_gain-312-      unsigned p = wave_pos & (WAVE_RING - 1);
+src/libretro.c.bak_wave_gain-313-      wave_ring[p * 2]     = audio[i * 2];
+src/libretro.c.bak_wave_gain-314-      wave_ring[p * 2 + 1] = audio[i * 2 + 1];
+src/libretro.c.bak_wave_gain-315-      wave_pos++;
+src/libretro.c.bak_wave_gain-316-   }
+src/libretro.c.bak_wave_gain-317-
+src/libretro.c.bak_wave_gain-318-   start = wave_pos - WAVE_SPAN;
+src/libretro.c.bak_wave_gain-319-   for (i = 0; i < WAVE_SPAN; i++)
+src/libretro.c.bak_wave_gain-320-   {
+src/libretro.c.bak_wave_gain-321-      unsigned p = (start + (unsigned)i) & (WAVE_RING - 1);
+src/libretro.c.bak_wave_gain-322-      wave_lin[i * 2]     = wave_ring[p * 2];
+src/libretro.c.bak_wave_gain-323-      wave_lin[i * 2 + 1] = wave_ring[p * 2 + 1];
+src/libretro.c.bak_wave_gain-324-   }
+src/libretro.c.bak_wave_gain-325-
+src/libretro.c.bak_wave_gain-326-   draw_wave_channel(wave_lin, WAVE_SPAN, 0, WAVE_TOP, WAVE_H, get_color(10, 28, 31));
+src/libretro.c.bak_wave_gain-327-   draw_wave_channel(wave_lin, WAVE_SPAN, 1, WAVE_TOP + WAVE_H + WAVE_GAP, WAVE_H, get_color(28, 12, 27));
+src/libretro.c.bak_wave_gain-328-}
+src/libretro.c.bak_wave_gain-329-
+--
+src/libretro.c.bak_esp-152-      if (gx + 8 <= x || gx >= x + maxw)
+src/libretro.c.bak_esp-153-         continue;
+src/libretro.c.bak_esp-154-      put_glyph((unsigned char)text[i], gx, y, color, x, x + maxw);
+src/libretro.c.bak_esp-155-   }
+src/libretro.c.bak_esp-156-}
+src/libretro.c.bak_esp-157-
+src/libretro.c.bak_esp-158-/* texto proporcional cortado em maxx */
+src/libretro.c.bak_esp-159-static void draw_text_prop_clip(const char *text, int x, int y, unsigned short color, int maxx)
+src/libretro.c.bak_esp-160-{
+src/libretro.c.bak_esp-161-   int x0, x1;
+src/libretro.c.bak_esp-162-   for (; *text && x < maxx; text++)
+src/libretro.c.bak_esp-163-   {
+src/libretro.c.bak_esp-164-      unsigned char ch = (unsigned char)*text;
+src/libretro.c.bak_esp-165-      glyph_extent(ch, &x0, &x1);
+src/libretro.c.bak_esp-166-      if (x1 < 0)
+src/libretro.c.bak_esp-167-      {
+src/libretro.c.bak_esp-168-         x += 4;
+src/libretro.c.bak_esp-169-         continue;
+src/libretro.c.bak_esp-170-      }
+src/libretro.c.bak_esp-171-      put_glyph(ch, x - x0, y, color, 0, maxx);
+src/libretro.c.bak_esp-172-      x += (x1 - x0 + 2);
+src/libretro.c.bak_esp-173-   }
+src/libretro.c.bak_esp-174-}
+src/libretro.c.bak_esp-175-
+src/libretro.c.bak_esp-176-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c.bak_esp-177-static int led_level = 0;
+src/libretro.c.bak_esp-178-
+src/libretro.c.bak_esp-179-static void led_update(const short *audio, int n)
+src/libretro.c.bak_esp-180-{
+src/libretro.c.bak_esp-181-   int i, pk = 0, cur;
+src/libretro.c.bak_esp-182-   for (i = 0; i < n; i++)
+src/libretro.c.bak_esp-183-   {
+src/libretro.c.bak_esp-184-      int v = audio[i];
+src/libretro.c.bak_esp-185-      if (v < 0) v = -v;
+src/libretro.c.bak_esp-186-      if (v > pk) pk = v;
+src/libretro.c.bak_esp-187-   }
+src/libretro.c.bak_esp-188-   cur = pk / 40;
+src/libretro.c.bak_esp-189-   if (cur > 255) cur = 255;
+src/libretro.c.bak_esp-190-   led_level = (led_level * 192) >> 8;
+src/libretro.c.bak_esp-191-   if (cur > led_level)
+src/libretro.c.bak_esp-192-      led_level = cur;
+src/libretro.c.bak_esp-193-}
+src/libretro.c.bak_esp-194-
+src/libretro.c.bak_esp-195-static void draw_led(int cx, int cy)
+src/libretro.c.bak_esp-196-{
+src/libretro.c.bak_esp-197-   int dx, dy;
+src/libretro.c.bak_esp-198-   int t = led_level;
+src/libretro.c.bak_esp-199-   unsigned short col = get_color(8 + (23 * t) / 255, 3 + (9 * t) / 255, 2 + (5 * t) / 255);
+src/libretro.c.bak_esp-200-   for (dy = -3; dy <= 3; dy++)
+src/libretro.c.bak_esp-201-      for (dx = -3; dx <= 3; dx++)
+src/libretro.c.bak_esp-202-         if (dx * dx + dy * dy <= 10)
+src/libretro.c.bak_esp-203-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c.bak_esp-204-   if (t > 200)
+src/libretro.c.bak_esp-205-      set_pixel(framebuffer, cx - 1, cy - 1, get_color(31, 40, 30));
+src/libretro.c.bak_esp-206-}
+src/libretro.c.bak_esp-207-
+src/libretro.c.bak_esp-208-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c.bak_esp-209-#define UI_LEFT   16
+src/libretro.c.bak_esp-210-#define UI_RIGHT  304
+src/libretro.c.bak_esp-211-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c.bak_esp-212-
+src/libretro.c.bak_esp-213-static void draw_ui(void)
+src/libretro.c.bak_esp-214-{
+src/libretro.c.bak_esp-215-   char message[512];
+src/libretro.c.bak_esp-216-   int w, prog;
+src/libretro.c.bak_esp-217-
+src/libretro.c.bak_esp-218-   /* cabecalho */
+src/libretro.c.bak_esp-219-   draw_text_scroll(get_song_name(message), UI_LEFT, 12, 208, get_color(30, 58, 25));
+src/libretro.c.bak_esp-220-
+src/libretro.c.bak_esp-221-   get_track_label(message);
+src/libretro.c.bak_esp-222-   w = text_width_prop(message);
+src/libretro.c.bak_esp-223-   draw_text_prop(message, UI_RIGHT - w, 12, get_color(28, 56, 28));
+src/libretro.c.bak_esp-224-
+src/libretro.c.bak_esp-225-   draw_text_scroll(get_game_name(message), UI_LEFT, 31, UI_W, get_color(19, 36, 27));
+src/libretro.c.bak_esp-226-
+src/libretro.c.bak_esp-227-   get_system_line(message);
+src/libretro.c.bak_esp-228-   draw_text_prop(message, UI_LEFT, 46, get_color(15, 33, 21));
+src/libretro.c.bak_esp-229-
+src/libretro.c.bak_esp-230-   /* SYSTEM: (led) chip de audio */
+src/libretro.c.bak_esp-231-   {
+src/libretro.c.bak_esp:232:      int lx = UI_LEFT + text_width_prop("CHIP:") + 8;
+src/libretro.c.bak_esp:233:      draw_text_prop("CHIP:", UI_LEFT, 58, get_color(15, 33, 21));
+src/libretro.c.bak_esp-234-      draw_led(lx + 3, 62);
+src/libretro.c.bak_esp-235-      draw_text_prop_clip(get_chip_text(message), lx + 12, 58, get_color(27, 54, 29), UI_RIGHT);
+src/libretro.c.bak_esp-236-   }
+src/libretro.c.bak_esp-237-
+src/libretro.c.bak_esp-238-   /* barra de progresso */
+src/libretro.c.bak_esp-239-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 214, UI_W, 6);
+src/libretro.c.bak_esp-240-   prog = get_track_progress_permille();
+src/libretro.c.bak_esp-241-   if (prog > 0)
+src/libretro.c.bak_esp-242-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 214, (UI_W * prog) / 1000, 6);
+src/libretro.c.bak_esp-243-
+src/libretro.c.bak_esp-244-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c.bak_esp-245-   draw_text_prop(get_time_text(message), UI_LEFT, 226, get_color(27, 54, 29));
+src/libretro.c.bak_esp-246-
+src/libretro.c.bak_esp-247-   get_rate_text(message);
+src/libretro.c.bak_esp-248-   w = text_width_prop(message);
+src/libretro.c.bak_esp-249-   draw_text_prop(message, UI_RIGHT - w, 226, get_color(15, 33, 21));
+src/libretro.c.bak_esp-250-}
+src/libretro.c.bak_esp-251-
+src/libretro.c.bak_esp-252-/*
+src/libretro.c.bak_esp-253- * Tell libretro about this core, it's name, version and which rom files it supports.
+src/libretro.c.bak_esp-254- */
+src/libretro.c.bak_esp-255-void retro_get_system_info(struct retro_system_info *info)
+src/libretro.c.bak_esp-256-{
+src/libretro.c.bak_esp-257-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_esp-258-   info->library_name = "Game Music Emulator";
+src/libretro.c.bak_esp-259-   info->library_version = "v0.6.6";
+src/libretro.c.bak_esp-260-   info->need_fullpath = true;
+src/libretro.c.bak_esp-261-   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip";
+src/libretro.c.bak_esp-262-   info->block_extract = true;
+src/libretro.c.bak_esp-263-}
+src/libretro.c.bak_esp-264-
+src/libretro.c.bak_esp-265-/*
+src/libretro.c.bak_esp-266- * Tell libretro about the AV system; the fps, sound sample rate and the
+src/libretro.c.bak_esp-267- * resolution of the display.
+src/libretro.c.bak_esp-268- */
+src/libretro.c.bak_esp-269-void retro_get_system_av_info(struct retro_system_av_info *info)
+src/libretro.c.bak_esp-270-{
+src/libretro.c.bak_esp-271-   int pixel_format = RETRO_PIXEL_FORMAT_RGB565;
+src/libretro.c.bak_esp-272-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_esp-273-   info->timing.fps            = 60.0f;
+src/libretro.c.bak_esp-274-   info->timing.sample_rate    = 44100;
+src/libretro.c.bak_esp-275-   info->geometry.base_width   = 320;
+src/libretro.c.bak_esp-276-   info->geometry.base_height  = 240;
+src/libretro.c.bak_esp-277-   info->geometry.max_width    = 320;
+src/libretro.c.bak_esp-278-   info->geometry.max_height   = 240;
+src/libretro.c.bak_esp-279-   info->geometry.aspect_ratio = 320.0f / 240.0f;
+src/libretro.c.bak_esp-280-   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
+src/libretro.c.bak_esp-281-}
+src/libretro.c.bak_esp-282-
+src/libretro.c.bak_esp-283-void retro_init(void)
+src/libretro.c.bak_esp-284-{
+src/libretro.c.bak_esp-285-   unsigned level = 0;
+src/libretro.c.bak_esp-286-   /* set up some logging */
+src/libretro.c.bak_esp-287-   struct retro_log_callback log;
+src/libretro.c.bak_esp-288-   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+src/libretro.c.bak_esp-289-      log_cb = log.log;
+src/libretro.c.bak_esp-290-   else
+src/libretro.c.bak_esp-291-      log_cb = NULL;
+src/libretro.c.bak_esp-292-
+src/libretro.c.bak_esp-293-   // the performance level is guide to frontend to give an idea of how intensive this core is to run
+src/libretro.c.bak_esp-294-   environ_cb(RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL, &level);
+src/libretro.c.bak_esp-295-   framebuffer = create_surface(320,240,2);
+src/libretro.c.bak_esp-296-}
+src/libretro.c.bak_esp-297-
+src/libretro.c.bak_esp-298-// End of retrolib
+src/libretro.c.bak_esp-299-void retro_deinit(void)
+src/libretro.c.bak_esp-300-{
+src/libretro.c.bak_esp-301-   if (framebuffer)
+src/libretro.c.bak_esp-302-      free_surface(framebuffer);
+src/libretro.c.bak_esp-303-   framebuffer = NULL;
+src/libretro.c.bak_esp-304-}
+src/libretro.c.bak_esp-305-
+src/libretro.c.bak_esp-306-// Reset gme
+src/libretro.c.bak_esp-307-void retro_reset(void)
+src/libretro.c.bak_esp-308-{
+src/libretro.c.bak_esp-309-    start_track(0);
+src/libretro.c.bak_esp-310-}
+src/libretro.c.bak_esp-311-
+src/libretro.c.bak_esp-312-// Run a single frame
+src/libretro.c.bak_esp-313-void retro_run(void)
+--
+src/libretro.c.bak_logo-152-      if (gx + 8 <= x || gx >= x + maxw)
+src/libretro.c.bak_logo-153-         continue;
+src/libretro.c.bak_logo-154-      put_glyph((unsigned char)text[i], gx, y, color, x, x + maxw);
+src/libretro.c.bak_logo-155-   }
+src/libretro.c.bak_logo-156-}
+src/libretro.c.bak_logo-157-
+src/libretro.c.bak_logo-158-/* texto proporcional cortado em maxx */
+src/libretro.c.bak_logo-159-static void draw_text_prop_clip(const char *text, int x, int y, unsigned short color, int maxx)
+src/libretro.c.bak_logo-160-{
+src/libretro.c.bak_logo-161-   int x0, x1;
+src/libretro.c.bak_logo-162-   for (; *text && x < maxx; text++)
+src/libretro.c.bak_logo-163-   {
+src/libretro.c.bak_logo-164-      unsigned char ch = (unsigned char)*text;
+src/libretro.c.bak_logo-165-      glyph_extent(ch, &x0, &x1);
+src/libretro.c.bak_logo-166-      if (x1 < 0)
+src/libretro.c.bak_logo-167-      {
+src/libretro.c.bak_logo-168-         x += 4;
+src/libretro.c.bak_logo-169-         continue;
+src/libretro.c.bak_logo-170-      }
+src/libretro.c.bak_logo-171-      put_glyph(ch, x - x0, y, color, 0, maxx);
+src/libretro.c.bak_logo-172-      x += (x1 - x0 + 2);
+src/libretro.c.bak_logo-173-   }
+src/libretro.c.bak_logo-174-}
+src/libretro.c.bak_logo-175-
+src/libretro.c.bak_logo-176-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c.bak_logo-177-static int led_level = 0;
+src/libretro.c.bak_logo-178-
+src/libretro.c.bak_logo-179-static void led_update(const short *audio, int n)
+src/libretro.c.bak_logo-180-{
+src/libretro.c.bak_logo-181-   int i, pk = 0, cur;
+src/libretro.c.bak_logo-182-   for (i = 0; i < n; i++)
+src/libretro.c.bak_logo-183-   {
+src/libretro.c.bak_logo-184-      int v = audio[i];
+src/libretro.c.bak_logo-185-      if (v < 0) v = -v;
+src/libretro.c.bak_logo-186-      if (v > pk) pk = v;
+src/libretro.c.bak_logo-187-   }
+src/libretro.c.bak_logo-188-   cur = pk / 40;
+src/libretro.c.bak_logo-189-   if (cur > 255) cur = 255;
+src/libretro.c.bak_logo-190-   led_level = (led_level * 192) >> 8;
+src/libretro.c.bak_logo-191-   if (cur > led_level)
+src/libretro.c.bak_logo-192-      led_level = cur;
+src/libretro.c.bak_logo-193-}
+src/libretro.c.bak_logo-194-
+src/libretro.c.bak_logo-195-static void draw_led(int cx, int cy)
+src/libretro.c.bak_logo-196-{
+src/libretro.c.bak_logo-197-   int dx, dy;
+src/libretro.c.bak_logo-198-   int t = led_level;
+src/libretro.c.bak_logo-199-   unsigned short col = get_color(8 + (23 * t) / 255, 3 + (9 * t) / 255, 2 + (5 * t) / 255);
+src/libretro.c.bak_logo-200-   for (dy = -3; dy <= 3; dy++)
+src/libretro.c.bak_logo-201-      for (dx = -3; dx <= 3; dx++)
+src/libretro.c.bak_logo-202-         if (dx * dx + dy * dy <= 10)
+src/libretro.c.bak_logo-203-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c.bak_logo-204-   if (t > 200)
+src/libretro.c.bak_logo-205-      set_pixel(framebuffer, cx - 1, cy - 1, get_color(31, 40, 30));
+src/libretro.c.bak_logo-206-}
+src/libretro.c.bak_logo-207-
+src/libretro.c.bak_logo-208-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c.bak_logo-209-#define UI_LEFT   16
+src/libretro.c.bak_logo-210-#define UI_RIGHT  304
+src/libretro.c.bak_logo-211-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c.bak_logo-212-
+src/libretro.c.bak_logo-213-static void draw_ui(void)
+src/libretro.c.bak_logo-214-{
+src/libretro.c.bak_logo-215-   char message[512];
+src/libretro.c.bak_logo-216-   int w, prog;
+src/libretro.c.bak_logo-217-
+src/libretro.c.bak_logo-218-   /* cabecalho */
+src/libretro.c.bak_logo-219-   draw_text_scroll(get_song_name(message), UI_LEFT, 12, 208, get_color(30, 58, 25));
+src/libretro.c.bak_logo-220-
+src/libretro.c.bak_logo-221-   get_track_label(message);
+src/libretro.c.bak_logo-222-   w = text_width_prop(message);
+src/libretro.c.bak_logo-223-   draw_text_prop(message, UI_RIGHT - w, 12, get_color(28, 56, 28));
+src/libretro.c.bak_logo-224-
+src/libretro.c.bak_logo-225-   draw_text_scroll(get_game_name(message), UI_LEFT, 30, UI_W, get_color(19, 36, 27));
+src/libretro.c.bak_logo-226-
+src/libretro.c.bak_logo-227-   get_system_line(message);
+src/libretro.c.bak_logo-228-   draw_text_prop(message, UI_LEFT, 48, get_color(15, 33, 21));
+src/libretro.c.bak_logo-229-
+src/libretro.c.bak_logo-230-   /* SYSTEM: (led) chip de audio */
+src/libretro.c.bak_logo-231-   {
+src/libretro.c.bak_logo:232:      int lx = UI_LEFT + text_width_prop("CHIP:") + 8;
+src/libretro.c.bak_logo:233:      draw_text_prop("CHIP:", UI_LEFT, 66, get_color(15, 33, 21));
+src/libretro.c.bak_logo-234-      draw_led(lx + 3, 69);
+src/libretro.c.bak_logo-235-      draw_text_prop_clip(get_chip_text(message), lx + 12, 66, get_color(27, 54, 29), UI_RIGHT);
+src/libretro.c.bak_logo-236-   }
+src/libretro.c.bak_logo-237-
+src/libretro.c.bak_logo-238-   /* barra de progresso */
+src/libretro.c.bak_logo-239-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 209, UI_W, 6);
+src/libretro.c.bak_logo-240-   prog = get_track_progress_permille();
+src/libretro.c.bak_logo-241-   if (prog > 0)
+src/libretro.c.bak_logo-242-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 209, (UI_W * prog) / 1000, 6);
+src/libretro.c.bak_logo-243-
+src/libretro.c.bak_logo-244-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c.bak_logo-245-   draw_text_prop(get_time_text(message), UI_LEFT, 221, get_color(27, 54, 29));
+src/libretro.c.bak_logo-246-
+src/libretro.c.bak_logo-247-   get_rate_text(message);
+src/libretro.c.bak_logo-248-   w = text_width_prop(message);
+src/libretro.c.bak_logo-249-   draw_text_prop(message, UI_RIGHT - w, 221, get_color(15, 33, 21));
+src/libretro.c.bak_logo-250-}
+src/libretro.c.bak_logo-251-
+src/libretro.c.bak_logo-252-/*
+src/libretro.c.bak_logo-253- * Tell libretro about this core, it's name, version and which rom files it supports.
+src/libretro.c.bak_logo-254- */
+src/libretro.c.bak_logo-255-void retro_get_system_info(struct retro_system_info *info)
+src/libretro.c.bak_logo-256-{
+src/libretro.c.bak_logo-257-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_logo-258-   info->library_name = "Game Music Emulator";
+src/libretro.c.bak_logo-259-   info->library_version = "v0.6.6";
+src/libretro.c.bak_logo-260-   info->need_fullpath = true;
+src/libretro.c.bak_logo-261-   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip";
+src/libretro.c.bak_logo-262-   info->block_extract = true;
+src/libretro.c.bak_logo-263-}
+src/libretro.c.bak_logo-264-
+src/libretro.c.bak_logo-265-/*
+src/libretro.c.bak_logo-266- * Tell libretro about the AV system; the fps, sound sample rate and the
+src/libretro.c.bak_logo-267- * resolution of the display.
+src/libretro.c.bak_logo-268- */
+src/libretro.c.bak_logo-269-void retro_get_system_av_info(struct retro_system_av_info *info)
+src/libretro.c.bak_logo-270-{
+src/libretro.c.bak_logo-271-   int pixel_format = RETRO_PIXEL_FORMAT_RGB565;
+src/libretro.c.bak_logo-272-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_logo-273-   info->timing.fps            = 60.0f;
+src/libretro.c.bak_logo-274-   info->timing.sample_rate    = 44100;
+src/libretro.c.bak_logo-275-   info->geometry.base_width   = 320;
+src/libretro.c.bak_logo-276-   info->geometry.base_height  = 240;
+src/libretro.c.bak_logo-277-   info->geometry.max_width    = 320;
+src/libretro.c.bak_logo-278-   info->geometry.max_height   = 240;
+src/libretro.c.bak_logo-279-   info->geometry.aspect_ratio = 320.0f / 240.0f;
+src/libretro.c.bak_logo-280-   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
+src/libretro.c.bak_logo-281-}
+src/libretro.c.bak_logo-282-
+src/libretro.c.bak_logo-283-void retro_init(void)
+src/libretro.c.bak_logo-284-{
+src/libretro.c.bak_logo-285-   unsigned level = 0;
+src/libretro.c.bak_logo-286-   /* set up some logging */
+src/libretro.c.bak_logo-287-   struct retro_log_callback log;
+src/libretro.c.bak_logo-288-   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+src/libretro.c.bak_logo-289-      log_cb = log.log;
+src/libretro.c.bak_logo-290-   else
+src/libretro.c.bak_logo-291-      log_cb = NULL;
+src/libretro.c.bak_logo-292-
+src/libretro.c.bak_logo-293-   // the performance level is guide to frontend to give an idea of how intensive this core is to run
+src/libretro.c.bak_logo-294-   environ_cb(RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL, &level);
+src/libretro.c.bak_logo-295-   framebuffer = create_surface(320,240,2);
+src/libretro.c.bak_logo-296-}
+src/libretro.c.bak_logo-297-
+src/libretro.c.bak_logo-298-// End of retrolib
+src/libretro.c.bak_logo-299-void retro_deinit(void)
+src/libretro.c.bak_logo-300-{
+src/libretro.c.bak_logo-301-   if (framebuffer)
+src/libretro.c.bak_logo-302-      free_surface(framebuffer);
+src/libretro.c.bak_logo-303-   framebuffer = NULL;
+src/libretro.c.bak_logo-304-}
+src/libretro.c.bak_logo-305-
+src/libretro.c.bak_logo-306-// Reset gme
+src/libretro.c.bak_logo-307-void retro_reset(void)
+src/libretro.c.bak_logo-308-{
+src/libretro.c.bak_logo-309-    start_track(0);
+src/libretro.c.bak_logo-310-}
+src/libretro.c.bak_logo-311-
+src/libretro.c.bak_logo-312-// Run a single frame
+src/libretro.c.bak_logo-313-void retro_run(void)
+--
+src/libretro.c.bak_chip-176-         x += 4 * 2;
+src/libretro.c.bak_chip-177-         continue;
+src/libretro.c.bak_chip-178-      }
+src/libretro.c.bak_chip-179-      put_glyph(ch, x - x0 * 2, y, color, 0, maxx);
+src/libretro.c.bak_chip-180-      x += (x1 - x0 + 2) * 2;
+src/libretro.c.bak_chip-181-   }
+src/libretro.c.bak_chip-182-}
+src/libretro.c.bak_chip-183-
+src/libretro.c.bak_chip-184-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c.bak_chip-185-static int led_level = 0;
+src/libretro.c.bak_chip-186-
+src/libretro.c.bak_chip-187-static void led_update(const short *audio, int n)
+src/libretro.c.bak_chip-188-{
+src/libretro.c.bak_chip-189-   int i, pk = 0, cur;
+src/libretro.c.bak_chip-190-   for (i = 0; i < n; i++)
+src/libretro.c.bak_chip-191-   {
+src/libretro.c.bak_chip-192-      int v = audio[i];
+src/libretro.c.bak_chip-193-      if (v < 0) v = -v;
+src/libretro.c.bak_chip-194-      if (v > pk) pk = v;
+src/libretro.c.bak_chip-195-   }
+src/libretro.c.bak_chip-196-   cur = pk / 40;
+src/libretro.c.bak_chip-197-   if (cur > 255) cur = 255;
+src/libretro.c.bak_chip-198-   led_level = (led_level * 192) >> 8;
+src/libretro.c.bak_chip-199-   if (cur > led_level)
+src/libretro.c.bak_chip-200-      led_level = cur;
+src/libretro.c.bak_chip-201-}
+src/libretro.c.bak_chip-202-
+src/libretro.c.bak_chip-203-static void draw_led(int cx, int cy)
+src/libretro.c.bak_chip-204-{
+src/libretro.c.bak_chip-205-   int dx, dy;
+src/libretro.c.bak_chip-206-   int t = led_level;
+src/libretro.c.bak_chip-207-   int r = 8 + (23 * t) / 255, g = 3 + (9 * t) / 255, b = 2 + (5 * t) / 255;
+src/libretro.c.bak_chip-208-   unsigned short col;
+src/libretro.c.bak_chip-209-   if (t < 48) /* em repouso/fraco: escurece; acima disso fica igual */
+src/libretro.c.bak_chip-210-   {
+src/libretro.c.bak_chip-211-      r = 3 + ((r - 3) * t) / 48;
+src/libretro.c.bak_chip-212-      g = 1 + ((g - 1) * t) / 48;
+src/libretro.c.bak_chip-213-      b = 1 + ((b - 1) * t) / 48;
+src/libretro.c.bak_chip-214-   }
+src/libretro.c.bak_chip-215-   col = get_color(r, g, b);
+src/libretro.c.bak_chip-216-   for (dy = -6; dy <= 6; dy++)
+src/libretro.c.bak_chip-217-      for (dx = -6; dx <= 6; dx++)
+src/libretro.c.bak_chip-218-         if (dx * dx + dy * dy <= 40)
+src/libretro.c.bak_chip-219-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c.bak_chip-220-   if (t > 200)
+src/libretro.c.bak_chip-221-      set_pixel(framebuffer, cx - 2, cy - 2, get_color(31, 40, 30));
+src/libretro.c.bak_chip-222-}
+src/libretro.c.bak_chip-223-
+src/libretro.c.bak_chip-224-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c.bak_chip-225-#define UI_LEFT   32
+src/libretro.c.bak_chip-226-#define UI_RIGHT  608
+src/libretro.c.bak_chip-227-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c.bak_chip-228-
+src/libretro.c.bak_chip-229-/* Cabecalho: 4 linhas, uma por faixa do fundo (y = topo do texto).
+src/libretro.c.bak_chip-230- * 1) chip  2) sistema  3) jogo  4) faixa + Track N/M.
+src/libretro.c.bak_chip-231- * HDR_TEXT_MAX_X: limite direito das linhas 1-3 (o logo comeca depois). */
+src/libretro.c.bak_chip-232-#define HDR_Y1 24
+src/libretro.c.bak_chip-233-#define HDR_Y2 60
+src/libretro.c.bak_chip-234-#define HDR_Y3 96
+src/libretro.c.bak_chip-235-#define HDR_Y4 132
+src/libretro.c.bak_chip-236-#define HDR_TEXT_MAX_X 416
+src/libretro.c.bak_chip-237-
+src/libretro.c.bak_chip-238-static void draw_ui(void)
+src/libretro.c.bak_chip-239-{
+src/libretro.c.bak_chip-240-   char message[512];
+src/libretro.c.bak_chip-241-   int w, prog;
+src/libretro.c.bak_chip-242-
+src/libretro.c.bak_chip-243-   /* cabecalho: linha 4 = faixa (esq) + Track N/M (dir) */
+src/libretro.c.bak_chip-244-   get_track_label(message);
+src/libretro.c.bak_chip-245-   w = text_width_prop(message);
+src/libretro.c.bak_chip-246-   draw_text_prop(message, UI_RIGHT - w, HDR_Y4, get_color(28, 56, 28));
+src/libretro.c.bak_chip-247-   draw_text_scroll(get_song_name(message), UI_LEFT, HDR_Y4, UI_W - w - 16, get_color(30, 58, 25));
+src/libretro.c.bak_chip-248-
+src/libretro.c.bak_chip-249-   /* linha 3 = jogo */
+src/libretro.c.bak_chip-250-   draw_text_scroll(get_game_name(message), UI_LEFT, HDR_Y3, HDR_TEXT_MAX_X - UI_LEFT, get_color(19, 36, 27));
+src/libretro.c.bak_chip-251-
+src/libretro.c.bak_chip-252-   /* linha 2 = sistema */
+src/libretro.c.bak_chip-253-   get_system_line(message);
+src/libretro.c.bak_chip-254-   draw_text_prop_clip(message, UI_LEFT, HDR_Y2, get_color(15, 33, 21), HDR_TEXT_MAX_X - UI_LEFT);
+src/libretro.c.bak_chip-255-
+src/libretro.c.bak_chip:256:   /* linha 1 = CHIP: (led) chip de audio */
+src/libretro.c.bak_chip-257-   {
+src/libretro.c.bak_chip:258:      int lx = UI_LEFT + text_width_prop("CHIP:") + 16;
+src/libretro.c.bak_chip-259-      int cw = HDR_TEXT_MAX_X - (lx + 24);
+src/libretro.c.bak_chip-260-      if (cw < 16) cw = 16;
+src/libretro.c.bak_chip:261:      draw_text_prop("CHIP:", UI_LEFT, HDR_Y1, get_color(15, 33, 21));
+src/libretro.c.bak_chip-262-      draw_led(lx + 6, HDR_Y1 + 6);
+src/libretro.c.bak_chip-263-      draw_text_prop_clip(get_chip_text(message), lx + 24, HDR_Y1, get_color(27, 54, 29), cw);
+src/libretro.c.bak_chip-264-   }
+src/libretro.c.bak_chip-265-
+src/libretro.c.bak_chip-266-   /* barra de progresso (proxima ao espectro, cuja base fica em y=408) */
+src/libretro.c.bak_chip-267-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 413, UI_W, 12);
+src/libretro.c.bak_chip-268-   prog = get_track_progress_permille();
+src/libretro.c.bak_chip-269-   if (prog > 0)
+src/libretro.c.bak_chip-270-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 413, (UI_W * prog) / 1000, 12);
+src/libretro.c.bak_chip-271-
+src/libretro.c.bak_chip-272-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c.bak_chip-273-   draw_text_prop(get_time_text(message), UI_LEFT, 442, get_color(27, 54, 29));
+src/libretro.c.bak_chip-274-
+src/libretro.c.bak_chip-275-   get_rate_text(message);
+src/libretro.c.bak_chip-276-   w = text_width_prop(message);
+src/libretro.c.bak_chip-277-   draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
+src/libretro.c.bak_chip-278-}
+src/libretro.c.bak_chip-279-
+src/libretro.c.bak_chip-280-/* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
+src/libretro.c.bak_chip-281-#define WAVE_TOP  167
+src/libretro.c.bak_chip-282-#define WAVE_H    48
+src/libretro.c.bak_chip-283-#define WAVE_GAP  10
+src/libretro.c.bak_chip-284-
+src/libretro.c.bak_chip-285-static void draw_wave_channel(const short *audio, int frames, int offset,
+src/libretro.c.bak_chip-286-                               int y0, int h, unsigned short color, int gain_q8)
+src/libretro.c.bak_chip-287-{
+src/libretro.c.bak_chip-288-   int x, px = -1, py = 0;
+src/libretro.c.bak_chip-289-   int mid = y0 + h / 2;
+src/libretro.c.bak_chip-290-
+src/libretro.c.bak_chip-291-   draw_line(framebuffer, get_color(4, 7, 8), UI_LEFT, mid, UI_RIGHT, mid);
+src/libretro.c.bak_chip-292-
+src/libretro.c.bak_chip-293-   for (x = 0; x < UI_W; x++)
+src/libretro.c.bak_chip-294-   {
+src/libretro.c.bak_chip-295-      int idx = (x * frames) / UI_W;
+src/libretro.c.bak_chip-296-      int s   = audio[idx * 2 + offset];
+src/libretro.c.bak_chip-297-      int v = (s * gain_q8) >> 8;
+src/libretro.c.bak_chip-298-      int y = mid - (v * (h / 2)) / 32768;
+src/libretro.c.bak_chip-299-      if (y < y0)         y = y0;
+src/libretro.c.bak_chip-300-      if (y >= y0 + h)     y = y0 + h - 1;
+src/libretro.c.bak_chip-301-      if (px >= 0)
+src/libretro.c.bak_chip-302-         draw_line(framebuffer, color, UI_LEFT + px, py, UI_LEFT + x, y);
+src/libretro.c.bak_chip-303-      px = x;
+src/libretro.c.bak_chip-304-      py = y;
+src/libretro.c.bak_chip-305-   }
+src/libretro.c.bak_chip-306-}
+src/libretro.c.bak_chip-307-
+src/libretro.c.bak_chip-308-/* Janela do osciloscopio: WAVE_SPAN amostras (por canal) mais recentes.
+src/libretro.c.bak_chip-309- * 735 = 1 quadro (~16,7 ms); maior = mais oscilacoes visiveis na tela.
+src/libretro.c.bak_chip-310- * WAVE_RING deve ser potencia de 2 e maior que WAVE_SPAN. */
+src/libretro.c.bak_chip-311-#define WAVE_SPAN 1470
+src/libretro.c.bak_chip-312-#define WAVE_RING 8192
+src/libretro.c.bak_chip-313-
+src/libretro.c.bak_chip-314-static short wave_ring[WAVE_RING * 2];
+src/libretro.c.bak_chip-315-static short wave_lin[WAVE_SPAN * 2];
+src/libretro.c.bak_chip-316-static unsigned wave_pos = 0;
+src/libretro.c.bak_chip-317-
+src/libretro.c.bak_chip-318-/* Ganho automatico do osciloscopio (mais movimento nas ondas) */
+src/libretro.c.bak_chip-319-#define WAVE_TARGET   28000   /* pico alvo (max 32767) */
+src/libretro.c.bak_chip-320-#define WAVE_MAX_GAIN 12      /* ganho maximo (x) */
+src/libretro.c.bak_chip-321-#define WAVE_MIN_PEAK 1500    /* abaixo disso nao amplia mais (evita ruido) */
+src/libretro.c.bak_chip-322-
+src/libretro.c.bak_chip-323-static int wave_peak[2] = { 0, 0 };
+src/libretro.c.bak_chip-324-
+src/libretro.c.bak_chip-325-static void draw_waveform(const short *audio, int frames)
+src/libretro.c.bak_chip-326-{
+src/libretro.c.bak_chip-327-   int i, ch;
+src/libretro.c.bak_chip-328-   int gain[2];
+src/libretro.c.bak_chip-329-   unsigned start;
+src/libretro.c.bak_chip-330-
+src/libretro.c.bak_chip-331-   for (i = 0; i < frames; i++)
+src/libretro.c.bak_chip-332-   {
+src/libretro.c.bak_chip-333-      unsigned p = wave_pos & (WAVE_RING - 1);
+src/libretro.c.bak_chip-334-      wave_ring[p * 2]     = audio[i * 2];
+src/libretro.c.bak_chip-335-      wave_ring[p * 2 + 1] = audio[i * 2 + 1];
+src/libretro.c.bak_chip-336-      wave_pos++;
+src/libretro.c.bak_chip-337-   }
+src/libretro.c.bak_chip-338-
+src/libretro.c.bak_chip-339-   start = wave_pos - WAVE_SPAN;
+src/libretro.c.bak_chip-340-   for (i = 0; i < WAVE_SPAN; i++)
+src/libretro.c.bak_chip-341-   {
+--
+src/libretro.c-158-   {
+src/libretro.c-159-      int gx = x - off + i * 8 * 2;
+src/libretro.c-160-      if (gx + 8 * 2 <= x || gx >= x + maxw)
+src/libretro.c-161-         continue;
+src/libretro.c-162-      put_glyph((unsigned char)text[i], gx, y, color, x, x + maxw);
+src/libretro.c-163-   }
+src/libretro.c-164-}
+src/libretro.c-165-
+src/libretro.c-166-/* texto proporcional cortado em maxx */
+src/libretro.c-167-static void draw_text_prop_clip(const char *text, int x, int y, unsigned short color, int maxx)
+src/libretro.c-168-{
+src/libretro.c-169-   int x0, x1;
+src/libretro.c-170-   for (; *text && x < maxx; text++)
+src/libretro.c-171-   {
+src/libretro.c-172-      unsigned char ch = (unsigned char)*text;
+src/libretro.c-173-      glyph_extent(ch, &x0, &x1);
+src/libretro.c-174-      if (x1 < 0)
+src/libretro.c-175-      {
+src/libretro.c-176-         x += 4 * 2;
+src/libretro.c-177-         continue;
+src/libretro.c-178-      }
+src/libretro.c-179-      put_glyph(ch, x - x0 * 2, y, color, 0, maxx);
+src/libretro.c-180-      x += (x1 - x0 + 2) * 2;
+src/libretro.c-181-   }
+src/libretro.c-182-}
+src/libretro.c-183-
+src/libretro.c-184-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c-185-static int led_level = 0;
+src/libretro.c-186-
+src/libretro.c-187-static void led_update(const short *audio, int n)
+src/libretro.c-188-{
+src/libretro.c-189-   int i, pk = 0, cur;
+src/libretro.c-190-   for (i = 0; i < n; i++)
+src/libretro.c-191-   {
+src/libretro.c-192-      int v = audio[i];
+src/libretro.c-193-      if (v < 0) v = -v;
+src/libretro.c-194-      if (v > pk) pk = v;
+src/libretro.c-195-   }
+src/libretro.c-196-   cur = pk / 40;
+src/libretro.c-197-   if (cur > 255) cur = 255;
+src/libretro.c-198-   led_level = (led_level * 192) >> 8;
+src/libretro.c-199-   if (cur > led_level)
+src/libretro.c-200-      led_level = cur;
+src/libretro.c-201-}
+src/libretro.c-202-
+src/libretro.c-203-static void draw_led(int cx, int cy)
+src/libretro.c-204-{
+src/libretro.c-205-   int dx, dy;
+src/libretro.c-206-   int t = led_level;
+src/libretro.c-207-   int r = 8 + (23 * t) / 255, g = 3 + (9 * t) / 255, b = 2 + (5 * t) / 255;
+src/libretro.c-208-   unsigned short col;
+src/libretro.c-209-   if (t < 48) /* em repouso/fraco: escurece; acima disso fica igual */
+src/libretro.c-210-   {
+src/libretro.c-211-      r = 3 + ((r - 3) * t) / 48;
+src/libretro.c-212-      g = 1 + ((g - 1) * t) / 48;
+src/libretro.c-213-      b = 1 + ((b - 1) * t) / 48;
+src/libretro.c-214-   }
+src/libretro.c-215-   col = get_color(r, g, b);
+src/libretro.c-216-   for (dy = -6; dy <= 6; dy++)
+src/libretro.c-217-      for (dx = -6; dx <= 6; dx++)
+src/libretro.c-218-         if (dx * dx + dy * dy <= 40)
+src/libretro.c-219-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c-220-   if (t > 200)
+src/libretro.c-221-      set_pixel(framebuffer, cx - 2, cy - 2, get_color(31, 40, 30));
+src/libretro.c-222-}
+src/libretro.c-223-
+src/libretro.c-224-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c-225-#define UI_LEFT   32
+src/libretro.c-226-#define UI_RIGHT  608
+src/libretro.c-227-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c-228-
+src/libretro.c-229-/* Cabecalho: 4 linhas, uma por faixa do fundo (y = topo do texto).
+src/libretro.c-230- * 1) chip  2) sistema  3) jogo  4) faixa + Track N/M.
+src/libretro.c-231- * HDR_TEXT_MAX_X: limite direito das linhas 1-3 (o logo comeca depois). */
+src/libretro.c-232-#define HDR_Y1 24
+src/libretro.c-233-#define HDR_Y2 60
+src/libretro.c-234-#define HDR_Y3 96
+src/libretro.c-235-#define HDR_Y4 132
+src/libretro.c-236-#define HDR_TEXT_MAX_X 416
+src/libretro.c-237-
+src/libretro.c:238:/* ---- fonte do CHIP: Press Start 2P (src/font_chip.h) com degrade vertical ---- */
+src/libretro.c-239-#include "font_chip.h"
+src/libretro.c-240-
+src/libretro.c-241-#define CHIP_SPACE 5   /* largura do espaco (px do atlas) */
+src/libretro.c-242-
+src/libretro.c-243-static unsigned short chip_grad[8];
+src/libretro.c-244-
+src/libretro.c-245-static void chip_grad_init(void)
+src/libretro.c-246-{
+src/libretro.c-247-   /* degrade da imagem de referencia: azul -> branco (topo), dourado -> creme (base) */
+src/libretro.c-248-   static const unsigned char rgb[8][3] = {
+src/libretro.c-249-      { 69, 149, 204}, {135, 190, 231}, {212, 237, 253}, {255, 255, 255},
+src/libretro.c-250-      {183, 129,  41}, {229, 185,  87}, {252, 245, 232}, {252, 245, 232}
+src/libretro.c-251-   };
+src/libretro.c-252-   int i;
+src/libretro.c-253-   for (i = 0; i < 8; i++)
+src/libretro.c-254-      chip_grad[i] = get_color(rgb[i][0] >> 3, rgb[i][1] >> 2, rgb[i][2] >> 3);
+src/libretro.c-255-}
+src/libretro.c-256-
+src/libretro.c-257-static int chip_pixel(unsigned char ch, int x, int y)
+src/libretro.c-258-{
+src/libretro.c-259-   const unsigned short *p = (const unsigned short *)font_chip.pixel_data;
+src/libretro.c-260-   return p[(ch % 16) * 8 + x + ((ch >> 4) * 8 + y) * 128] == 0;
+src/libretro.c-261-}
+src/libretro.c-262-
+src/libretro.c-263-static void chip_extent(unsigned char ch, int *x0, int *x1)
+src/libretro.c-264-{
+src/libretro.c-265-   int x, y;
+src/libretro.c-266-   *x0 = 8;
+src/libretro.c-267-   *x1 = -1;
+src/libretro.c-268-   for (x = 0; x < 8; x++)
+src/libretro.c-269-      for (y = 0; y < 8; y++)
+src/libretro.c-270-         if (chip_pixel(ch, x, y))
+src/libretro.c-271-         {
+src/libretro.c-272-            if (x < *x0) *x0 = x;
+src/libretro.c-273-            if (x > *x1) *x1 = x;
+src/libretro.c-274-         }
+src/libretro.c-275-}
+src/libretro.c-276-
+src/libretro.c-277-static void chip_put_glyph(unsigned char ch, int px, int py, int cx1)
+src/libretro.c-278-{
+src/libretro.c-279-   int x, y, sx, sy;
+src/libretro.c-280-   for (y = 0; y < 8; y++)
+src/libretro.c-281-      for (x = 0; x < 8; x++)
+src/libretro.c-282-      {
+src/libretro.c-283-         if (!chip_pixel(ch, x, y))
+src/libretro.c-284-            continue;
+src/libretro.c-285-         for (sy = 0; sy < 2; sy++)
+src/libretro.c-286-         {
+src/libretro.c-287-            int yy = py + y * 2 + sy;
+src/libretro.c-288-            if (yy < 0 || yy >= 480)
+src/libretro.c-289-               continue;
+src/libretro.c-290-            for (sx = 0; sx < 2; sx++)
+src/libretro.c-291-            {
+src/libretro.c-292-               int xx = px + x * 2 + sx;
+src/libretro.c-293-               if (xx < 0 || xx >= 640 || xx >= cx1)
+src/libretro.c-294-                  continue;
+src/libretro.c-295-               set_pixel(framebuffer, xx, yy, chip_grad[y]);
+src/libretro.c-296-            }
+src/libretro.c-297-         }
+src/libretro.c-298-      }
+src/libretro.c-299-}
+src/libretro.c-300-
+src/libretro.c-301-static int chip_text_width(const char *text)
+src/libretro.c-302-{
+src/libretro.c-303-   int w = 0, x0, x1;
+src/libretro.c-304-   for (; *text; text++)
+src/libretro.c-305-   {
+src/libretro.c-306-      chip_extent((unsigned char)*text, &x0, &x1);
+src/libretro.c-307-      w += (x1 < 0) ? CHIP_SPACE : (x1 - x0 + 2);
+src/libretro.c-308-   }
+src/libretro.c-309-   w = w > 0 ? w - 1 : 0;
+src/libretro.c-310-   return w * 2;
+src/libretro.c-311-}
+src/libretro.c-312-
+src/libretro.c-313-/* maxx = limite direito absoluto (x) */
+src/libretro.c-314-static void chip_draw_text(const char *text, int x, int y, int maxx)
+src/libretro.c-315-{
+src/libretro.c-316-   int x0, x1;
+src/libretro.c-317-   chip_grad_init();
+src/libretro.c-318-   for (; *text && x < maxx; text++)
+src/libretro.c-319-   {
+src/libretro.c-320-      unsigned char ch = (unsigned char)*text;
+src/libretro.c-321-      chip_extent(ch, &x0, &x1);
+src/libretro.c-322-      if (x1 < 0)
+src/libretro.c-323-      {
+src/libretro.c-324-         x += CHIP_SPACE * 2;
+src/libretro.c-325-         continue;
+src/libretro.c-326-      }
+src/libretro.c-327-      chip_put_glyph(ch, x - x0 * 2, y, maxx);
+src/libretro.c-328-      x += (x1 - x0 + 2) * 2;
+src/libretro.c-329-   }
+src/libretro.c-330-}
+src/libretro.c-331-
+src/libretro.c-332-static void draw_ui(void)
+src/libretro.c-333-{
+src/libretro.c-334-   char message[512];
+src/libretro.c-335-   int w, prog;
+src/libretro.c-336-
+src/libretro.c-337-   /* cabecalho: linha 4 = faixa (esq) + Track N/M (dir) */
+src/libretro.c-338-   get_track_label(message);
+src/libretro.c-339-   w = text_width_prop(message);
+src/libretro.c-340-   draw_text_prop(message, UI_RIGHT - w, HDR_Y4, get_color(28, 56, 28));
+src/libretro.c-341-   draw_text_scroll(get_song_name(message), UI_LEFT, HDR_Y4, UI_W - w - 16, get_color(30, 58, 25));
+src/libretro.c-342-
+src/libretro.c-343-   /* linha 3 = jogo */
+src/libretro.c-344-   draw_text_scroll(get_game_name(message), UI_LEFT, HDR_Y3, HDR_TEXT_MAX_X - UI_LEFT, get_color(19, 36, 27));
+src/libretro.c-345-
+src/libretro.c-346-   /* linha 2 = sistema */
+src/libretro.c-347-   get_system_line(message);
+src/libretro.c-348-   draw_text_prop_clip(message, UI_LEFT, HDR_Y2, get_color(15, 33, 21), HDR_TEXT_MAX_X);
+src/libretro.c-349-
+src/libretro.c:350:   /* linha 1 = CHIP: (led) chip de audio - Press Start 2P com degrade */
+src/libretro.c-351-   {
+src/libretro.c:352:      int lx = UI_LEFT + chip_text_width("CHIP:") + 16;
+src/libretro.c:353:      chip_draw_text("CHIP:", UI_LEFT, HDR_Y1, HDR_TEXT_MAX_X);
+src/libretro.c-354-      draw_led(lx + 6, HDR_Y1 + 6);
+src/libretro.c-355-      chip_draw_text(get_chip_text(message), lx + 24, HDR_Y1, HDR_TEXT_MAX_X);
+src/libretro.c-356-   }
+src/libretro.c-357-
+src/libretro.c-358-   /* barra de progresso (proxima ao espectro, cuja base fica em y=408) */
+src/libretro.c-359-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 413, UI_W, 12);
+src/libretro.c-360-   prog = get_track_progress_permille();
+src/libretro.c-361-   if (prog > 0)
+src/libretro.c-362-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 413, (UI_W * prog) / 1000, 12);
+src/libretro.c-363-
+src/libretro.c-364-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c-365-   draw_text_prop(get_time_text(message), UI_LEFT, 442, get_color(27, 54, 29));
+src/libretro.c-366-
+src/libretro.c-367-   get_rate_text(message);
+src/libretro.c-368-   w = text_width_prop(message);
+src/libretro.c-369-   draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
+src/libretro.c-370-}
+src/libretro.c-371-
+src/libretro.c-372-/* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
+src/libretro.c-373-#define WAVE_TOP  167
+src/libretro.c-374-#define WAVE_H    48
+src/libretro.c-375-#define WAVE_GAP  10
+src/libretro.c-376-
+src/libretro.c-377-static void draw_wave_channel(const short *audio, int frames, int offset,
+src/libretro.c-378-                               int y0, int h, unsigned short color, int gain_q8)
+src/libretro.c-379-{
+src/libretro.c-380-   int x, px = -1, py = 0;
+src/libretro.c-381-   int mid = y0 + h / 2;
+src/libretro.c-382-
+src/libretro.c-383-   draw_line(framebuffer, get_color(4, 7, 8), UI_LEFT, mid, UI_RIGHT, mid);
+src/libretro.c-384-
+src/libretro.c-385-   for (x = 0; x < UI_W; x++)
+src/libretro.c-386-   {
+src/libretro.c-387-      int idx = (x * frames) / UI_W;
+src/libretro.c-388-      int s   = audio[idx * 2 + offset];
+src/libretro.c-389-      int v = (s * gain_q8) >> 8;
+src/libretro.c-390-      int y = mid - (v * (h / 2)) / 32768;
+src/libretro.c-391-      if (y < y0)         y = y0;
+src/libretro.c-392-      if (y >= y0 + h)     y = y0 + h - 1;
+src/libretro.c-393-      if (px >= 0)
+src/libretro.c-394-         draw_line(framebuffer, color, UI_LEFT + px, py, UI_LEFT + x, y);
+src/libretro.c-395-      px = x;
+src/libretro.c-396-      py = y;
+src/libretro.c-397-   }
+src/libretro.c-398-}
+src/libretro.c-399-
+src/libretro.c-400-/* Janela do osciloscopio: WAVE_SPAN amostras (por canal) mais recentes.
+src/libretro.c-401- * 735 = 1 quadro (~16,7 ms); maior = mais oscilacoes visiveis na tela.
+src/libretro.c-402- * WAVE_RING deve ser potencia de 2 e maior que WAVE_SPAN. */
+src/libretro.c-403-#define WAVE_SPAN 1470
+src/libretro.c-404-#define WAVE_RING 8192
+src/libretro.c-405-
+src/libretro.c-406-static short wave_ring[WAVE_RING * 2];
+src/libretro.c-407-static short wave_lin[WAVE_SPAN * 2];
+src/libretro.c-408-static unsigned wave_pos = 0;
+src/libretro.c-409-
+src/libretro.c-410-/* Ganho automatico do osciloscopio (mais movimento nas ondas) */
+src/libretro.c-411-#define WAVE_TARGET   28000   /* pico alvo (max 32767) */
+src/libretro.c-412-#define WAVE_MAX_GAIN 12      /* ganho maximo (x) */
+src/libretro.c-413-#define WAVE_MIN_PEAK 1500    /* abaixo disso nao amplia mais (evita ruido) */
+src/libretro.c-414-
+src/libretro.c-415-static int wave_peak[2] = { 0, 0 };
+src/libretro.c-416-
+src/libretro.c-417-static void draw_waveform(const short *audio, int frames)
+src/libretro.c-418-{
+src/libretro.c-419-   int i, ch;
+src/libretro.c-420-   int gain[2];
+src/libretro.c-421-   unsigned start;
+src/libretro.c-422-
+src/libretro.c-423-   for (i = 0; i < frames; i++)
+src/libretro.c-424-   {
+src/libretro.c-425-      unsigned p = wave_pos & (WAVE_RING - 1);
+src/libretro.c-426-      wave_ring[p * 2]     = audio[i * 2];
+src/libretro.c-427-      wave_ring[p * 2 + 1] = audio[i * 2 + 1];
+src/libretro.c-428-      wave_pos++;
+src/libretro.c-429-   }
+src/libretro.c-430-
+src/libretro.c-431-   start = wave_pos - WAVE_SPAN;
+src/libretro.c-432-   for (i = 0; i < WAVE_SPAN; i++)
+src/libretro.c-433-   {
+--
+src/libretro.c.bak_tempo-152-      if (gx + 8 <= x || gx >= x + maxw)
+src/libretro.c.bak_tempo-153-         continue;
+src/libretro.c.bak_tempo-154-      put_glyph((unsigned char)text[i], gx, y, color, x, x + maxw);
+src/libretro.c.bak_tempo-155-   }
+src/libretro.c.bak_tempo-156-}
+src/libretro.c.bak_tempo-157-
+src/libretro.c.bak_tempo-158-/* texto proporcional cortado em maxx */
+src/libretro.c.bak_tempo-159-static void draw_text_prop_clip(const char *text, int x, int y, unsigned short color, int maxx)
+src/libretro.c.bak_tempo-160-{
+src/libretro.c.bak_tempo-161-   int x0, x1;
+src/libretro.c.bak_tempo-162-   for (; *text && x < maxx; text++)
+src/libretro.c.bak_tempo-163-   {
+src/libretro.c.bak_tempo-164-      unsigned char ch = (unsigned char)*text;
+src/libretro.c.bak_tempo-165-      glyph_extent(ch, &x0, &x1);
+src/libretro.c.bak_tempo-166-      if (x1 < 0)
+src/libretro.c.bak_tempo-167-      {
+src/libretro.c.bak_tempo-168-         x += 4;
+src/libretro.c.bak_tempo-169-         continue;
+src/libretro.c.bak_tempo-170-      }
+src/libretro.c.bak_tempo-171-      put_glyph(ch, x - x0, y, color, 0, maxx);
+src/libretro.c.bak_tempo-172-      x += (x1 - x0 + 2);
+src/libretro.c.bak_tempo-173-   }
+src/libretro.c.bak_tempo-174-}
+src/libretro.c.bak_tempo-175-
+src/libretro.c.bak_tempo-176-/* LED de atividade: acende com o volume do audio e decai rapido */
+src/libretro.c.bak_tempo-177-static int led_level = 0;
+src/libretro.c.bak_tempo-178-
+src/libretro.c.bak_tempo-179-static void led_update(const short *audio, int n)
+src/libretro.c.bak_tempo-180-{
+src/libretro.c.bak_tempo-181-   int i, pk = 0, cur;
+src/libretro.c.bak_tempo-182-   for (i = 0; i < n; i++)
+src/libretro.c.bak_tempo-183-   {
+src/libretro.c.bak_tempo-184-      int v = audio[i];
+src/libretro.c.bak_tempo-185-      if (v < 0) v = -v;
+src/libretro.c.bak_tempo-186-      if (v > pk) pk = v;
+src/libretro.c.bak_tempo-187-   }
+src/libretro.c.bak_tempo-188-   cur = pk / 40;
+src/libretro.c.bak_tempo-189-   if (cur > 255) cur = 255;
+src/libretro.c.bak_tempo-190-   led_level = (led_level * 192) >> 8;
+src/libretro.c.bak_tempo-191-   if (cur > led_level)
+src/libretro.c.bak_tempo-192-      led_level = cur;
+src/libretro.c.bak_tempo-193-}
+src/libretro.c.bak_tempo-194-
+src/libretro.c.bak_tempo-195-static void draw_led(int cx, int cy)
+src/libretro.c.bak_tempo-196-{
+src/libretro.c.bak_tempo-197-   int dx, dy;
+src/libretro.c.bak_tempo-198-   int t = led_level;
+src/libretro.c.bak_tempo-199-   unsigned short col = get_color(8 + (23 * t) / 255, 3 + (9 * t) / 255, 2 + (5 * t) / 255);
+src/libretro.c.bak_tempo-200-   for (dy = -3; dy <= 3; dy++)
+src/libretro.c.bak_tempo-201-      for (dx = -3; dx <= 3; dx++)
+src/libretro.c.bak_tempo-202-         if (dx * dx + dy * dy <= 10)
+src/libretro.c.bak_tempo-203-            set_pixel(framebuffer, cx + dx, cy + dy, col);
+src/libretro.c.bak_tempo-204-   if (t > 200)
+src/libretro.c.bak_tempo-205-      set_pixel(framebuffer, cx - 1, cy - 1, get_color(31, 40, 30));
+src/libretro.c.bak_tempo-206-}
+src/libretro.c.bak_tempo-207-
+src/libretro.c.bak_tempo-208-/* ---- layout: cabecalho / espectro / progresso ---- */
+src/libretro.c.bak_tempo-209-#define UI_LEFT   16
+src/libretro.c.bak_tempo-210-#define UI_RIGHT  304
+src/libretro.c.bak_tempo-211-#define UI_W      (UI_RIGHT - UI_LEFT)
+src/libretro.c.bak_tempo-212-
+src/libretro.c.bak_tempo-213-static void draw_ui(void)
+src/libretro.c.bak_tempo-214-{
+src/libretro.c.bak_tempo-215-   char message[512];
+src/libretro.c.bak_tempo-216-   int w, prog;
+src/libretro.c.bak_tempo-217-
+src/libretro.c.bak_tempo-218-   /* cabecalho */
+src/libretro.c.bak_tempo-219-   draw_text_scroll(get_song_name(message), UI_LEFT, 12, 208, get_color(30, 58, 25));
+src/libretro.c.bak_tempo-220-
+src/libretro.c.bak_tempo-221-   get_track_label(message);
+src/libretro.c.bak_tempo-222-   w = text_width_prop(message);
+src/libretro.c.bak_tempo-223-   draw_text_prop(message, UI_RIGHT - w, 12, get_color(28, 56, 28));
+src/libretro.c.bak_tempo-224-
+src/libretro.c.bak_tempo-225-   draw_text_scroll(get_game_name(message), UI_LEFT, 30, UI_W, get_color(19, 36, 27));
+src/libretro.c.bak_tempo-226-
+src/libretro.c.bak_tempo-227-   get_system_line(message);
+src/libretro.c.bak_tempo-228-   draw_text_prop(message, UI_LEFT, 48, get_color(15, 33, 21));
+src/libretro.c.bak_tempo-229-
+src/libretro.c.bak_tempo-230-   /* SYSTEM: (led) chip de audio */
+src/libretro.c.bak_tempo-231-   {
+src/libretro.c.bak_tempo:232:      int lx = UI_LEFT + text_width_prop("CHIP:") + 8;
+src/libretro.c.bak_tempo:233:      draw_text_prop("CHIP:", UI_LEFT, 66, get_color(15, 33, 21));
+src/libretro.c.bak_tempo-234-      draw_led(lx + 3, 69);
+src/libretro.c.bak_tempo-235-      draw_text_prop_clip(get_chip_text(message), lx + 12, 66, get_color(27, 54, 29), UI_RIGHT);
+src/libretro.c.bak_tempo-236-   }
+src/libretro.c.bak_tempo-237-
+src/libretro.c.bak_tempo-238-   /* barra de progresso */
+src/libretro.c.bak_tempo-239-   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 214, UI_W, 6);
+src/libretro.c.bak_tempo-240-   prog = get_track_progress_permille();
+src/libretro.c.bak_tempo-241-   if (prog > 0)
+src/libretro.c.bak_tempo-242-      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 214, (UI_W * prog) / 1000, 6);
+src/libretro.c.bak_tempo-243-
+src/libretro.c.bak_tempo-244-   /* tempo (esquerda) e taxa de amostragem (direita) */
+src/libretro.c.bak_tempo-245-   draw_text_prop(get_time_text(message), UI_LEFT, 226, get_color(27, 54, 29));
+src/libretro.c.bak_tempo-246-
+src/libretro.c.bak_tempo-247-   get_rate_text(message);
+src/libretro.c.bak_tempo-248-   w = text_width_prop(message);
+src/libretro.c.bak_tempo-249-   draw_text_prop(message, UI_RIGHT - w, 226, get_color(15, 33, 21));
+src/libretro.c.bak_tempo-250-}
+src/libretro.c.bak_tempo-251-
+src/libretro.c.bak_tempo-252-/*
+src/libretro.c.bak_tempo-253- * Tell libretro about this core, it's name, version and which rom files it supports.
+src/libretro.c.bak_tempo-254- */
+src/libretro.c.bak_tempo-255-void retro_get_system_info(struct retro_system_info *info)
+src/libretro.c.bak_tempo-256-{
+src/libretro.c.bak_tempo-257-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_tempo-258-   info->library_name = "Game Music Emulator";
+src/libretro.c.bak_tempo-259-   info->library_version = "v0.6.6";
+src/libretro.c.bak_tempo-260-   info->need_fullpath = true;
+src/libretro.c.bak_tempo-261-   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip";
+src/libretro.c.bak_tempo-262-   info->block_extract = true;
+src/libretro.c.bak_tempo-263-}
+src/libretro.c.bak_tempo-264-
+src/libretro.c.bak_tempo-265-/*
+src/libretro.c.bak_tempo-266- * Tell libretro about the AV system; the fps, sound sample rate and the
+src/libretro.c.bak_tempo-267- * resolution of the display.
+src/libretro.c.bak_tempo-268- */
+src/libretro.c.bak_tempo-269-void retro_get_system_av_info(struct retro_system_av_info *info)
+src/libretro.c.bak_tempo-270-{
+src/libretro.c.bak_tempo-271-   int pixel_format = RETRO_PIXEL_FORMAT_RGB565;
+src/libretro.c.bak_tempo-272-   memset(info, 0, sizeof(*info));
+src/libretro.c.bak_tempo-273-   info->timing.fps            = 60.0f;
+src/libretro.c.bak_tempo-274-   info->timing.sample_rate    = 44100;
+src/libretro.c.bak_tempo-275-   info->geometry.base_width   = 320;
+src/libretro.c.bak_tempo-276-   info->geometry.base_height  = 240;
+src/libretro.c.bak_tempo-277-   info->geometry.max_width    = 320;
+src/libretro.c.bak_tempo-278-   info->geometry.max_height   = 240;
+src/libretro.c.bak_tempo-279-   info->geometry.aspect_ratio = 320.0f / 240.0f;
+src/libretro.c.bak_tempo-280-   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
+src/libretro.c.bak_tempo-281-}
+src/libretro.c.bak_tempo-282-
+src/libretro.c.bak_tempo-283-void retro_init(void)
+src/libretro.c.bak_tempo-284-{
+src/libretro.c.bak_tempo-285-   unsigned level = 0;
+src/libretro.c.bak_tempo-286-   /* set up some logging */
+src/libretro.c.bak_tempo-287-   struct retro_log_callback log;
+src/libretro.c.bak_tempo-288-   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+src/libretro.c.bak_tempo-289-      log_cb = log.log;
+src/libretro.c.bak_tempo-290-   else
+src/libretro.c.bak_tempo-291-      log_cb = NULL;
+src/libretro.c.bak_tempo-292-
+src/libretro.c.bak_tempo-293-   // the performance level is guide to frontend to give an idea of how intensive this core is to run
+src/libretro.c.bak_tempo-294-   environ_cb(RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL, &level);
+src/libretro.c.bak_tempo-295-   framebuffer = create_surface(320,240,2);
+src/libretro.c.bak_tempo-296-}
+src/libretro.c.bak_tempo-297-
+src/libretro.c.bak_tempo-298-// End of retrolib
+src/libretro.c.bak_tempo-299-void retro_deinit(void)
+src/libretro.c.bak_tempo-300-{
+src/libretro.c.bak_tempo-301-   if (framebuffer)
+src/libretro.c.bak_tempo-302-      free_surface(framebuffer);
+src/libretro.c.bak_tempo-303-   framebuffer = NULL;
+src/libretro.c.bak_tempo-304-}
+src/libretro.c.bak_tempo-305-
+src/libretro.c.bak_tempo-306-// Reset gme
+src/libretro.c.bak_tempo-307-void retro_reset(void)
+src/libretro.c.bak_tempo-308-{
+src/libretro.c.bak_tempo-309-    start_track(0);
+src/libretro.c.bak_tempo-310-}
+src/libretro.c.bak_tempo-311-
+src/libretro.c.bak_tempo-312-// Run a single frame
+src/libretro.c.bak_tempo-313-void retro_run(void)

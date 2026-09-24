@@ -1,0 +1,41 @@
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+
+build
+src/mt32_roms.inc
+deps/mt32rom/
+MT32_CONTROL.ROM
+MT32_PCM.ROM
+src/fluid_soundfont.inc
+src/gm_soundfont.inc

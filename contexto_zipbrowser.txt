@@ -1,0 +1,2125 @@
+]633;E;for f in src/fileformat.c src/fileformat.h src/playlist.c src/playlist.h src/player.c src/player.h src/libretro.c;fdcc5591-a713-41bf-a50f-bab46842770c]633;C=== src/fileformat.c ===
+#include <stdlib.h>
+#include <boolean.h>
+#include <string.h>
+#include <file/file_path.h>
+#include <streams/file_stream.h>
+#include "zlib.h"
+
+#include "fileformat.h"
+#include "unzip.h"
+
+/* forward declarations */
+RFILE* rfopen(const char *path, const char *mode);
+int rfclose(RFILE* stream);
+int64_t rftell(RFILE* stream);
+int rferror(RFILE* stream);
+int64_t rfread(void* buffer,
+   size_t elem_size, size_t elem_count, RFILE* stream);
+int64_t rfseek(RFILE* stream, int64_t offset, int origin);
+int rfeof(RFILE* stream);
+
+static const char *gme_allowed_exts[] = {
+    "ay","AY",
+    "gbs","GBS",
+    "gym","GYM",
+    "hes","HES",
+    "kss","KSS",
+    "nsf","NSF",
+    "nsfe","NSFE",
+    "sap","SAP",
+    "spc","SPC",
+    "vgm","VGM",
+    "vgz","VGZ",
+      "mod","MOD",
+      "s3m","S3M",
+      "xm","XM",
+      "it","IT",
+      "mp3","MP3",
+      "mid","MID",
+      "midi","MIDI"
+};
+
+static bool is_gme_allowed_ext(char *ext)
+{
+   int i;
+   int arr_length = sizeof(gme_allowed_exts) / sizeof(char*);
+   for(i=0;i<arr_length;i++)
+   {
+      if(strcmp(ext,gme_allowed_exts[i])==0)
+         return true;
+   }
+   return false;
+}
+
+static bool uncompress_file_data(file_data** fd)
+{
+   int srcLen,dstLen;
+   int err            = -1;
+   z_stream strm      = {0};
+   file_data* src_fd  = *fd;
+   file_data* dest_fd = NULL;
+
+   srcLen             = src_fd->length;
+   memcpy(&dstLen,&(src_fd->data[src_fd->length-4]),4);
+   dest_fd            = malloc(sizeof(file_data));
+   dest_fd->length    = dstLen;
+   dest_fd->name      = calloc(strlen(src_fd->name)+1,sizeof(char));
+   strcpy(dest_fd->name,src_fd->name);
+   dest_fd->data      = malloc(dstLen * sizeof(char));
+   strm.total_in      = strm.avail_in  = srcLen;
+   strm.total_out     = strm.avail_out = dstLen;
+   strm.next_in       = (Bytef *) src_fd->data;
+   strm.next_out      = (Bytef *) dest_fd->data;
+
+   strm.zalloc        = Z_NULL;
+   strm.zfree         = Z_NULL;
+   strm.opaque        = Z_NULL;
+
+   // 15 window bits, and the +32 tells zlib 
+   // to to detect if using gzip or zlib
+   if ((err = inflateInit2(&strm, (15 + 32))) == Z_OK)
+   {
+      if ((err = inflate(&strm, Z_FINISH)) != Z_STREAM_END)
+      {
+         inflateEnd(&strm);
+         return false;
+      }
+   }
+   else
+   {
+      inflateEnd(&strm);
+      return false;
+   }
+
+   inflateEnd(&strm);
+   free(src_fd->data);
+   free(src_fd->name);
+   free(src_fd);
+   *fd = dest_fd;
+   return true;
+}
+
+static bool get_files_from_zip(const char *path,
+      file_data ***dest_files, int *dest_numfiles)
+{
+   int i;
+   char *ext;
+   unz_global_info64 gi;
+   unz_file_info64 file_info;
+   char filename_inzip[256];
+   file_data **files;
+   int numfiles,position;
+   //load zip content
+   unzFile uf = unzOpen64(path);
+   unzGetGlobalInfo64(uf,&gi);
+   numfiles = (int)gi.number_entry;
+   files    = malloc(sizeof(file_data*) * numfiles);
+   position = 0;
+   for(i=0;i<gi.number_entry;i++)
+   {
+      void* buf;
+      int bytes_read;
+      uInt size_buf = 8192;
+      //read compressed file info
+      int err = unzGetCurrentFileInfo64(uf,&file_info,filename_inzip,sizeof(filename_inzip),NULL,0,NULL,0);
+      if(err!=UNZ_OK)
+         return false;
+      if(filename_inzip[file_info.size_filename -1]=='/')
+         ext = strrchr(filename_inzip,'/');
+      else
+         ext = strrchr(filename_inzip,'.') + 1;
+      if(is_gme_allowed_ext(ext))
+      {
+         //get file name in zip
+         files[position] = malloc(sizeof(file_data));
+         files[position]->name = calloc(strlen(filename_inzip)+1,sizeof(char));
+         strcpy(files[position]->name,filename_inzip);
+         //allocate uncompressed data buffer
+         files[position]->length= sizeof(char) * file_info.uncompressed_size;
+         files[position]->data = (char*)malloc(files[position]->length);
+         //setup buffer
+         bytes_read = 0;
+         buf = (void*)malloc(size_buf);
+         if (buf==NULL)
+            return false;
+         //read file from zip
+         err = unzOpenCurrentFilePassword(uf,NULL);
+         if (err != UNZ_OK)
+            return false;
+         //get data from zip
+         do 
+         {
+            err = unzReadCurrentFile(uf,buf,size_buf);
+            if(err<0)
+               return false;
+            if(err>0)
+            {
+               memcpy(files[position]->data + bytes_read,buf,err * sizeof(char));
+               bytes_read += err;
+            }
+         } while (err>0);
+         if(buf!=NULL)
+            free(buf);
+
+         if(strcmp(ext,"vgz")==0)
+            if(!uncompress_file_data(&(files[position])))
+               return false;
+         position++;
+      }
+      else
+      {
+         numfiles--;
+      }
+      if ((i+1)<gi.number_entry)
+         unzGoToNextFile(uf);
+   }
+   files = realloc(files,sizeof(file_data*) * numfiles);
+   *dest_files = files;
+   *dest_numfiles = numfiles;
+   return true;
+}
+
+bool get_file_data(const char *path,file_data ***dest_files, int *dest_numfiles)
+{
+   //local variables
+   RFILE *fp;
+   file_data *fd;
+   file_data **files;
+   //get file name and extension
+   const char *bname = path_basename(path);
+   char *ext         = strrchr(path,'.') +1;
+   //get file data
+   if(strcmp(ext,"zip")==0)
+      return get_files_from_zip(path,dest_files,dest_numfiles);
+   if (!(fp = rfopen(path,"rb")))
+      return false;
+   files = malloc(sizeof(file_data*));
+   fd    = malloc(sizeof(file_data));
+   //get file length
+   fd->length = filestream_get_size(fp);
+   //get file data
+   fd->data = malloc(sizeof(char)*fd->length);
+   rfread(fd->data,1,fd->length,fp);
+   rfclose(fp);
+   fd->name = calloc(strlen(bname)+1,sizeof(char));
+   strcpy(fd->name,bname);
+   if(strcmp(ext,"vgz")==0)
+   {
+      if(!uncompress_file_data(&fd))
+         return false;
+   }
+   files[0]       = fd;
+   *dest_files    = files;
+   *dest_numfiles = 1;
+   return true;
+}
+=== src/fileformat.h ===
+#ifndef GME_LIBRETRO_FILEFORMAT_H__
+#define GME_LIBRETRO_FILEFORMAT_H__
+
+typedef struct
+{
+   char* name;
+   char* data;
+   int length;
+} file_data;
+
+bool get_file_data(const char *path,file_data ***files, int *dest_numfiles);
+
+#endif
+=== src/playlist.c ===
+#include <stdlib.h>
+#include <boolean.h>
+#include <string.h>
+#include "file/file_path.h"
+
+#include "playlist.h"
+#include "xmp_backend.h"
+#include "mp3_backend.h"
+#include "midi_backend.h"
+#include <stdio.h>
+#include "libretro.h"
+
+extern retro_log_printf_t log_cb;
+
+bool get_playlist(const char *path, playlist **dest_pl)
+{
+   //local variables
+   int i,j;
+   int position = 0;
+   Music_Emu *temp_emu = NULL;
+   gme_file_data *gfd = NULL;
+   gme_err_t err_msg;
+   //init playlist
+   playlist *pl = (playlist *)calloc(1, sizeof(playlist));
+   //load libretro content file
+   if(get_playlist_gme_files(path,&(pl->files),&(pl->num_files),&(pl->num_tracks)))
+   {
+      pl->tracks = (gme_track_data **)calloc(pl->num_tracks, sizeof(gme_track_data*));
+      //read tracks
+      for(i=0;i<pl->num_files;i++)
+      {
+         gfd      = pl->files[i];
+          if (gfd->is_tracker)
+          {
+             if (get_tracker_track_data(gfd, i, &(pl->tracks[position])))
+                position++;
+             continue;
+          }
+          if (gfd->is_mp3)
+          {
+             if (get_mp3_track_data(gfd, i, &(pl->tracks[position])))
+                position++;
+             continue;
+          }
+          if (gfd->is_midi)
+          {
+             if (get_midi_track_data(gfd, i, &(pl->tracks[position])))
+                position++;
+             continue;
+          }
+          temp_emu = gme_new_emu(gfd->file_type,gme_info_only);
+         err_msg  = gme_load_data(temp_emu,gfd->data,gfd->length);
+
+         if (err_msg)
+            goto error;
+
+         for(j=0;j<gfd->num_tracks;j++)
+         {
+            if(get_track_data(temp_emu,i,j,gfd->name,
+                     &(pl->tracks[position])))
+               position++;
+         }				
+
+         gme_delete(temp_emu);
+         temp_emu = NULL;
+      }
+   }
+   else
+      goto error;
+
+   if (pl->num_tracks == 0)
+      goto error;
+
+   *dest_pl = pl;
+   return true;
+
+error:
+   if (temp_emu)
+      gme_delete(temp_emu);
+
+   if (pl)
+      cleanup_playlist(pl);
+
+   return false;
+}
+
+bool get_playlist_gme_files(const char *path,gme_file_data ***dest_files,int *dest_num_files, int *dest_num_tracks)
+{
+   int i;
+   bool success              = true;
+   file_data **files         = NULL;
+   gme_file_data **gme_files = NULL;
+   int num_files             = 0;
+   int num_tracks            = 0;
+
+   if(get_file_data(path,&files,&num_files))
+   {
+      gme_files = malloc(sizeof(gme_file_data*) * num_files);
+      for(i=0;i< num_files;i++)
+      {
+         gme_files[i] = NULL;
+         if(!get_gme_file_data(files[i],&(gme_files[i])))
+         {
+            success = false;
+            break;
+         }
+         free(files[i]);
+         if(gme_files[i]==NULL)
+         {
+            success = false;
+            break;
+         }
+         num_tracks += gme_files[i]->num_tracks;
+      }
+      free(files);
+   }
+   else
+      success = false;
+   *dest_files = gme_files;
+   *dest_num_files = num_files;
+   *dest_num_tracks = num_tracks;
+   return success;
+}
+
+#include <zlib.h>
+
+#define GZ_MAX_OUT (64u * 1024u * 1024u)
+
+/* Se os dados forem gzip (1F 8B), devolve um buffer novo (malloc) descomprimido.
+   Retorna NULL se nao for gzip ou se a descompressao falhar. */
+static unsigned char *gunzip_buffer(const unsigned char *src, int src_len, int *out_len)
+{
+   z_stream zs;
+   unsigned char *out;
+   size_t cap, used = 0;
+   int ret;
+
+   if (src_len < 18 || src[0] != 0x1F || src[1] != 0x8B)
+      return NULL;
+
+   memset(&zs, 0, sizeof(zs));
+   if (inflateInit2(&zs, 15 + 16) != Z_OK)
+      return NULL;
+
+   cap = (size_t)src_len * 4 + 4096;
+   out = (unsigned char*)malloc(cap);
+   if (!out)
+   {
+      inflateEnd(&zs);
+      return NULL;
+   }
+
+   zs.next_in  = (Bytef*)src;
+   zs.avail_in = (uInt)src_len;
+
+   do
+   {
+      if (used == cap)
+      {
+         size_t ncap = cap * 2;
+         unsigned char *tmp;
+         if (ncap > GZ_MAX_OUT)
+            goto fail;
+         tmp = (unsigned char*)realloc(out, ncap);
+         if (!tmp)
+            goto fail;
+         out = tmp;
+         cap = ncap;
+      }
+      zs.next_out  = out + used;
+      zs.avail_out = (uInt)(cap - used);
+      ret = inflate(&zs, Z_NO_FLUSH);
+      used = cap - zs.avail_out;
+      if (ret != Z_OK && ret != Z_STREAM_END)
+         goto fail;
+   } while (ret != Z_STREAM_END);
+
+   inflateEnd(&zs);
+   if (used == 0)
+   {
+      free(out);
+      return NULL;
+   }
+   *out_len = (int)used;
+   return out;
+
+fail:
+   inflateEnd(&zs);
+   free(out);
+   return NULL;
+}
+
+static int ext_is(const char *e, const char *w)
+{
+   while (*e && *w)
+   {
+      char c = *e;
+      if (c >= 'A' && c <= 'Z')
+         c = (char)(c + 32);
+      if (c != *w)
+         return 0;
+      e++;
+      w++;
+   }
+   return *e == *w;
+}
+
+static int is_tracker_ext(const char *e)
+{
+   return ext_is(e, "mod") || ext_is(e, "s3m") || ext_is(e, "xm") || ext_is(e, "it");
+}
+
+bool get_gme_file_data(file_data *fd,gme_file_data **dest_gfd)
+{
+   Music_Emu* temp_emu;
+   gme_err_t err_msg;
+   gme_file_data *gfd;
+   const char *dot = strrchr(fd->name,'.');
+   const char *ext = dot ? dot + 1 : "";
+   const char *load_data = fd->data;
+   int load_len = fd->length;
+   unsigned char *raw = NULL;
+   int raw_len = 0;
+
+   gfd = malloc(sizeof(gme_file_data));
+   if (!gfd)
+      return false;
+
+   gfd->is_tracker = 0;
+   gfd->is_mp3     = 0;
+   gfd->is_midi    = 0;
+   gfd->file_type  = NULL;
+
+   /* MOD/S3M/XM/IT: nao passa pelo GME, so valida com a libxmp */
+   if (is_tracker_ext(ext))
+   {
+      char probe_name[64];
+      long probe_ms = 0;
+      if (xmp_backend_probe((const unsigned char*)fd->data, fd->length,
+               probe_name, sizeof(probe_name), &probe_ms) != 0)
+      {
+         log_cb(RETRO_LOG_ERROR, "[GME] Error: libxmp nao carregou %s\n", fd->name);
+         free(gfd);
+         return false;
+      }
+      gfd->is_tracker = 1;
+      gfd->num_tracks = 1;
+      gfd->name = calloc(strlen(fd->name)+1,sizeof(char));
+      strcpy(gfd->name,fd->name);
+      gfd->data = malloc(fd->length ? fd->length : 1);
+      memcpy(gfd->data,fd->data,fd->length);
+      gfd->length = fd->length;
+      *dest_gfd = gfd;
+      return true;
+   }
+
+   /* MP3: decodificado pelo dr_mp3, sem GME. Assume a posse do buffer (evita copiar arquivos grandes) */
+   if (ext_is(ext, "mp3"))
+   {
+      char probe_title[64], probe_artist[64];
+      long probe_ms = 0;
+      if (mp3_backend_probe((const unsigned char*)fd->data, fd->length,
+               probe_title, sizeof(probe_title), probe_artist, sizeof(probe_artist), &probe_ms) != 0)
+      {
+         log_cb(RETRO_LOG_ERROR, "[GME] Error: dr_mp3 nao carregou %s\n", fd->name);
+         free(gfd);
+         return false;
+      }
+      gfd->is_mp3     = 1;
+      gfd->num_tracks = 1;
+      gfd->name       = fd->name;
+      gfd->data       = fd->data;
+      gfd->length     = fd->length;
+      *dest_gfd = gfd;
+      return true;
+   }
+
+   /* MIDI: valida o SMF aqui; a sintese (Munt/MT-32) so acontece ao tocar e precisa das ROMs */
+   if (ext_is(ext, "mid") || ext_is(ext, "midi"))
+   {
+      char probe_title[64];
+      long probe_ms = 0;
+      if (midi_backend_probe((const unsigned char*)fd->data, fd->length,
+               probe_title, sizeof(probe_title), &probe_ms) != 0)
+      {
+         log_cb(RETRO_LOG_ERROR, "[GME] Error: arquivo MIDI invalido: %s\n", fd->name);
+         free(gfd);
+         return false;
+      }
+      gfd->is_midi    = 1;
+      gfd->num_tracks = 1;
+      gfd->name       = fd->name;
+      gfd->data       = fd->data;
+      gfd->length     = fd->length;
+      *dest_gfd = gfd;
+      return true;
+   }
+
+   //check extension to determine player type
+   if(strcmp(ext,"ay")==0 || strcmp(ext,"AY")==0)
+      gfd->file_type = gme_ay_type;
+   else if(strcmp(ext,"gbs")==0 || strcmp(ext,"GBS")==0)
+      gfd->file_type = gme_gbs_type;
+   else if(strcmp(ext,"gym")==0 || strcmp(ext,"GYM")==0)
+      gfd->file_type = gme_gym_type;
+   else if(strcmp(ext,"hes")==0 || strcmp(ext,"HES")==0)
+      gfd->file_type = gme_hes_type;
+   else if(strcmp(ext,"kss")==0 || strcmp(ext,"KSS")==0)
+      gfd->file_type = gme_kss_type;
+   else if(strcmp(ext,"nsf")==0 || strcmp(ext,"NSF")==0)
+      gfd->file_type = gme_nsf_type;
+   else if(strcmp(ext,"nsfe")==0 || strcmp(ext,"NSFE")==0)
+      gfd->file_type = gme_nsfe_type;
+   else if(strcmp(ext,"sap")==0 || strcmp(ext,"SAP")==0)
+      gfd->file_type = gme_sap_type;
+   else if(strcmp(ext,"spc") == 0 || strcmp(ext,"SPC")==0)
+      gfd->file_type = gme_spc_type;
+   else if(strcmp(ext,"vgm") == 0 || strcmp(ext,"VGM")==0)
+      gfd->file_type = gme_vgm_type;
+   else if(strcmp(ext,"vgz") == 0 || strcmp(ext,"VGZ")==0)
+      gfd->file_type = gme_vgz_type;
+   else
+   {
+      free(gfd);
+      return false;
+   }
+
+   //.vgm que na verdade e gzip (VGZ com extensao errada): descomprime uma vez aqui
+   if (gfd->file_type == gme_vgm_type)
+   {
+      raw = gunzip_buffer((const unsigned char*)fd->data, fd->length, &raw_len);
+      if (raw)
+      {
+         load_data = (const char*)raw;
+         load_len  = raw_len;
+         log_cb(RETRO_LOG_INFO, "[GME] %s: gzip detectado com extensao .vgm, descomprimido (%d -> %d bytes)\n",
+                fd->name, fd->length, raw_len);
+      }
+   }
+
+   temp_emu = gme_new_emu(gfd->file_type,gme_info_only);
+   if (!temp_emu)
+   {
+      log_cb(RETRO_LOG_ERROR, "[GME] Error: gme_new_emu falhou para %s\n", fd->name);
+      free(raw);
+      free(gfd);
+      return false;
+   }
+
+   err_msg = gme_load_data(temp_emu,load_data,load_len);
+   if (err_msg)
+   {
+      log_cb(RETRO_LOG_ERROR, "[GME] Error: %s (%s)\n", err_msg, fd->name);
+      gme_delete(temp_emu);
+      free(raw);
+      free(gfd);
+      return false;
+   }
+   gfd->num_tracks = gme_track_count(temp_emu);
+   gme_delete( temp_emu );
+
+   //deep copy file data (ja descomprimido, se for o caso)
+   gfd->name = calloc(strlen(fd->name)+1,sizeof(char));
+   strcpy(gfd->name,fd->name);
+   gfd->data = malloc(load_len * sizeof(char));
+   memcpy(gfd->data,load_data,load_len);
+   gfd->length = load_len;
+   free(raw);
+   *dest_gfd = gfd;
+   return true;
+}
+
+bool get_track_data(Music_Emu* emu, int fileid, int trackid, char *filename,gme_track_data **dest_gtd)
+{
+   gme_info_t* ti;
+   gme_track_data *gtd = malloc(sizeof(gme_track_data));
+   gtd->file_id        = fileid;
+   gtd->track_id       = trackid;
+   gme_track_info(emu, &ti,trackid);
+   //game name
+   if(strcmp(ti->game,"")==0)
+   {
+      gtd->game_name = calloc(strlen(filename)+1,sizeof(char));
+      strcpy(gtd->game_name,filename);
+   }
+   else
+   {
+      gtd->game_name = calloc(strlen(ti->game)+1,sizeof(char));
+      strcpy(gtd->game_name,ti->game);
+   }
+   //track length
+   gtd->track_length = ti->length;
+   if ( gtd->track_length <= 0 )
+      gtd->track_length = ti->intro_length + ti->loop_length * 2;
+   if ( gtd->track_length <= 0 )
+      gtd->track_length = (long) (2.5 * 60 * 1000);
+   //track name
+   if(strcmp(ti->song,"") == 0)
+   {
+      gtd->track_name = calloc(10,sizeof(char));
+      sprintf(gtd->track_name, "Track %i",trackid+1);
+   }
+   else
+   {
+      gtd->track_name = calloc(strlen(ti->song)+1,sizeof(char));
+      strcpy(gtd->track_name, ti->song);
+   }
+   gme_free_info(ti);
+   *dest_gtd = gtd;
+   return true;
+}
+
+bool get_tracker_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd)
+{
+   char title[64];
+   long ms = 0;
+   char *dot;
+   gme_track_data *gtd = malloc(sizeof(gme_track_data));
+   if (!gtd)
+      return false;
+
+   title[0] = '\0';
+   xmp_backend_probe((const unsigned char*)gfd->data, gfd->length, title, sizeof(title), &ms);
+
+   gtd->file_id  = fileid;
+   gtd->track_id = 0;
+
+   gtd->game_name = calloc(strlen(gfd->name) + 1, sizeof(char));
+   strcpy(gtd->game_name, gfd->name);
+
+   gtd->track_length = ms > 0 ? (int)ms : (int)(2.5 * 60 * 1000);
+
+   if (title[0])
+   {
+      gtd->track_name = calloc(strlen(title) + 1, sizeof(char));
+      strcpy(gtd->track_name, title);
+   }
+   else
+   {
+      gtd->track_name = calloc(strlen(gfd->name) + 1, sizeof(char));
+      strcpy(gtd->track_name, gfd->name);
+      dot = strrchr(gtd->track_name, '.');
+      if (dot)
+         *dot = '\0';
+   }
+   *dest_gtd = gtd;
+   return true;
+}
+
+static char *dup_cstr(const char *s)
+{
+   char *p = calloc(strlen(s) + 1, sizeof(char));
+   if (p)
+      strcpy(p, s);
+   return p;
+}
+
+bool get_mp3_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd)
+{
+   char title[64], artist[64];
+   long ms = 0;
+   const char *base;
+   const char *slash;
+   char *dot;
+   gme_track_data *gtd = malloc(sizeof(gme_track_data));
+   if (!gtd)
+      return false;
+
+   title[0]  = 0;
+   artist[0] = 0;
+   mp3_backend_probe((const unsigned char*)gfd->data, gfd->length,
+         title, sizeof(title), artist, sizeof(artist), &ms);
+
+   base  = gfd->name;
+   slash = strrchr(base, '/');
+   if (slash)
+      base = slash + 1;
+   slash = strrchr(base, '\\');
+   if (slash)
+      base = slash + 1;
+
+   gtd->file_id      = fileid;
+   gtd->track_id     = 0;
+   gtd->track_length = ms > 0 ? (int)ms : (int)(3 * 60 * 1000);
+
+   gtd->game_name = dup_cstr(artist[0] ? artist : base);
+
+   if (title[0])
+      gtd->track_name = dup_cstr(title);
+   else
+   {
+      gtd->track_name = dup_cstr(base);
+      if (gtd->track_name)
+      {
+         dot = strrchr(gtd->track_name, '.');
+         if (dot)
+            *dot = 0;
+      }
+   }
+   *dest_gtd = gtd;
+   return true;
+}
+
+bool get_midi_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd)
+{
+   char title[64];
+   long ms = 0;
+   const char *base;
+   const char *slash;
+   char *dot;
+   gme_track_data *gtd = malloc(sizeof(gme_track_data));
+   if (!gtd)
+      return false;
+
+   title[0] = 0;
+   midi_backend_probe((const unsigned char*)gfd->data, gfd->length, title, sizeof(title), &ms);
+
+   base  = gfd->name;
+   slash = strrchr(base, '/');
+   if (slash)
+      base = slash + 1;
+   slash = strrchr(base, '\\');
+   if (slash)
+      base = slash + 1;
+
+   gtd->file_id      = fileid;
+   gtd->track_id     = 0;
+   gtd->track_length = ms > 0 ? (int)ms : (int)(3 * 60 * 1000);
+   gtd->game_name    = dup_cstr(base);
+
+   if (title[0])
+      gtd->track_name = dup_cstr(title);
+   else
+   {
+      gtd->track_name = dup_cstr(base);
+      if (gtd->track_name)
+      {
+         dot = strrchr(gtd->track_name, '.');
+         if (dot)
+            *dot = 0;
+      }
+   }
+   *dest_gtd = gtd;
+   return true;
+}
+
+bool cleanup_playlist(playlist *playlist)	
+{
+   int i;
+   if(playlist->tracks!=NULL)
+   {
+      for(i=0;i<playlist->num_tracks;i++)
+      {
+         if(playlist->tracks[i] != NULL)
+         {
+            if(playlist->tracks[i]->game_name != NULL)
+               free(playlist->tracks[i]->game_name);
+            if(playlist->tracks[i]->track_name != NULL)
+               free(playlist->tracks[i]->track_name);
+            free(playlist->tracks[i]);
+         }
+      }
+      free(playlist->tracks);
+   }
+   if(playlist->files!=NULL)
+   {
+      for(i=0;i<playlist->num_files;i++)
+      {
+         if(playlist->files[i] != NULL)
+         {
+            if(playlist->files[i]->data != NULL)
+               free(playlist->files[i]->data);
+            if(playlist->files[i]->name != NULL)
+               free(playlist->files[i]->name);
+            free(playlist->files[i]);
+         }
+      }
+      free(playlist->files);
+   }
+   free(playlist);
+   return true;
+}
+=== src/playlist.h ===
+#ifndef GME_LIBRETRO_PLAYLIST_H__
+#define GME_LIBRETRO_PLAYLIST_H__
+
+#include "gme.h"
+#include "fileformat.h"
+
+typedef struct {
+	char* name;
+	char* data;
+	int length;
+	gme_type_t file_type;
+	int num_tracks;
+        int is_tracker;
+        int is_mp3;
+        int is_midi;
+} gme_file_data;
+
+typedef struct {
+	int file_id;
+	int track_id;
+	int track_length;
+	char* game_name;
+	char* track_name;	
+} gme_track_data;
+		
+typedef struct {
+	int num_files;
+	gme_file_data** files;
+	int num_tracks;
+	gme_track_data** tracks;
+} playlist;
+
+bool get_playlist(const char *path,playlist **dest_pl);
+
+bool get_playlist_gme_files(const char *path,gme_file_data*** dest_gme_files,int *num_file, int *num_tracks);
+bool get_gme_file_data(file_data *fd,gme_file_data **dest_gfd);
+bool get_track_data(Music_Emu* emu, int fileid, int trackid, char *filename, gme_track_data **dest_gtd);
+bool get_tracker_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd);
+bool get_mp3_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd);
+bool get_midi_track_data(gme_file_data *gfd, int fileid, gme_track_data **dest_gtd);
+
+bool cleanup_playlist(playlist* pl);
+
+#endif
+=== src/player.c ===
+#include <stdio.h>
+#include <string.h>
+#include <boolean.h>
+#include "player.h"
+#include "playlist.h"
+#include "fileformat.h"
+#include "libretro.h"
+#include "vgm_backend.h"
+#include "xmp_backend.h"
+#include "mp3_backend.h"
+#include "midi_backend.h"
+#include <zlib.h>
+
+extern retro_log_printf_t log_cb;
+
+static playlist *plist = NULL;
+static gme_track_data *track = NULL;
+static gme_file_data *file = NULL;
+static int prev_fileid;
+Music_Emu* emu = NULL;
+static short audio_buffer[8192];
+static bool is_playing_;
+static bool use_vgm_ = false;
+static bool use_xmp_ = false;
+static bool use_mp3_ = false;
+static bool use_midi_ = false;
+static char system_dir_[512];
+static long sample_rate_;
+static int current_track;
+static void detect_chips(void);
+
+void set_system_dir(const char *dir)
+{
+   snprintf(system_dir_, sizeof(system_dir_), "%s", dir ? dir : "");
+}
+
+/* troca o titulo da faixa por uma mensagem de erro visivel na tela */
+static void set_track_error(const char *msg)
+{
+   char *p;
+   if (!track)
+      return;
+   p = (char*)calloc(strlen(msg) + 1, sizeof(char));
+   if (!p)
+      return;
+   strcpy(p, msg);
+   free(track->track_name);
+   track->track_name = p;
+}
+
+bool is_emu_loaded(void)
+{
+   return (emu != NULL) || use_xmp_ || use_mp3_ || use_midi_;
+}
+
+bool open_file(const char *path, long sample_rate)
+{
+   sample_rate_  = sample_rate;
+   current_track = 0;
+   prev_fileid   = -1;
+
+   if(get_playlist(path,&plist))
+   {
+      start_track(current_track);
+      return true;
+   }
+   return false;
+}
+
+void close_file(void)
+{
+   midi_backend_close();
+   use_midi_ = false;
+   mp3_backend_close();
+   use_mp3_ = false;
+   xmp_backend_close();
+   use_xmp_ = false;
+   vgm_backend_close();
+   use_vgm_ = false;
+   gme_delete(emu);
+   emu = NULL;
+   if(plist!=NULL)
+      cleanup_playlist(plist);
+   plist = NULL;
+   track = NULL;
+}
+
+void start_track(int tracknr)
+{
+   memset(audio_buffer,0,8192 * sizeof(short));
+   midi_backend_close();
+   use_midi_ = false;
+   mp3_backend_close();
+   use_mp3_ = false;
+   xmp_backend_close();
+   use_xmp_ = false;
+   vgm_backend_close();
+   use_vgm_ = false;
+   current_track = tracknr;
+   track = plist->tracks[tracknr];
+   if(track)
+   {
+      is_playing_ = false;
+      file = plist->files[track->file_id];
+      prev_fileid = track->file_id;
+
+      /* MOD/S3M/XM/IT: o audio vem da libxmp, sem passar pelo GME */
+      if (file->is_tracker)
+      {
+         if (emu)
+         {
+            gme_delete(emu);
+            emu = NULL;
+         }
+         if (xmp_backend_open((const unsigned char*)file->data, file->length, sample_rate_) == 0)
+         {
+            use_xmp_    = true;
+            is_playing_ = true;
+         }
+         else
+            log_cb(RETRO_LOG_ERROR, "[GME] libxmp falhou ao abrir este modulo.\n");
+         detect_chips();
+         return;
+      }
+
+      if (file->is_midi)
+      {
+         int mrc;
+         if (emu)
+         {
+            gme_delete(emu);
+            emu = NULL;
+         }
+         mrc = midi_backend_open((const unsigned char*)file->data, file->length, sample_rate_, system_dir_);
+         if (mrc == 0)
+         {
+            use_midi_   = true;
+            is_playing_ = true;
+         }
+         else if (mrc == -2)
+         {
+            log_cb(RETRO_LOG_ERROR, "[GME] MT-32: ROMs nao encontradas em '%s' (MT32_CONTROL.ROM + MT32_PCM.ROM).\n", system_dir_);
+            set_track_error("MT-32: ROMS NAO ENCONTRADAS");
+         }
+         else if (mrc == -3)
+         {
+            log_cb(RETRO_LOG_ERROR, "[GME] MT-32: ROMs nao reconhecidas pelo Munt.\n");
+            set_track_error("MT-32: ROMS INVALIDAS");
+         }
+         else if (mrc == -5)
+         {
+            log_cb(RETRO_LOG_ERROR, "[GME] MIDI GM: nenhum SoundFont (.sf2) encontrado em '%s'.\n", system_dir_);
+            set_track_error("SOUNDFONT GM NAO ENCONTRADO");
+         }
+         else if (mrc == -6)
+         {
+            log_cb(RETRO_LOG_ERROR, "[GME] MIDI GM: nao foi possivel carregar o SoundFont.\n");
+            set_track_error("SOUNDFONT GM INVALIDO");
+         }
+         else if (mrc == -4)
+            log_cb(RETRO_LOG_ERROR, "[GME] MT-32: o Munt nao converteu para %ld Hz.\n", sample_rate_);
+         else
+            log_cb(RETRO_LOG_ERROR, "[GME] falha ao abrir este MIDI.\n");
+         detect_chips();
+         return;
+      }
+
+      if (file->is_mp3)
+      {
+         if (emu)
+         {
+            gme_delete(emu);
+            emu = NULL;
+         }
+         if (mp3_backend_open((const unsigned char*)file->data, file->length, sample_rate_) == 0)
+         {
+            use_mp3_    = true;
+            is_playing_ = true;
+         }
+         else
+            log_cb(RETRO_LOG_ERROR, "[GME] dr_mp3 falhou ao abrir este MP3.\n");
+         detect_chips();
+         return;
+      }
+
+      if (emu)
+         gme_delete (emu);
+      emu = gme_new_emu(file->file_type,sample_rate_);
+      gme_load_data(emu,file->data,file->length);
+      is_playing_ = true;
+      detect_chips();
+
+      /* VGM/VGZ: o audio vem da libvgm (todos os chips do VGMPlay) */
+      if (file->file_type == gme_vgm_type || file->file_type == gme_vgz_type)
+      {
+         if (vgm_backend_open((const unsigned char*)file->data, file->length, sample_rate_) == 0)
+            use_vgm_ = true;
+         else
+            log_cb(RETRO_LOG_ERROR, "[GME] libvgm falhou, usando GME para este arquivo.\n");
+      }
+   }
+   else
+   {
+      log_cb(RETRO_LOG_ERROR, "[GME] Error: Unknown track type.\n" );
+      is_playing_ = false;
+   }
+   if (is_playing_)
+      gme_start_track(emu, track->track_id);
+}
+
+short *play(void)
+{
+   if (is_playing_)
+   {
+      if (use_midi_)
+      {
+         if (midi_backend_ended())
+         {
+            if(current_track< (plist->num_tracks-1))
+               start_track(++current_track);
+            else
+               is_playing_ = false;
+         }
+         else
+            midi_backend_render(audio_buffer, 735);
+      }
+      else if (use_mp3_)
+      {
+         if (mp3_backend_ended())
+         {
+            if(current_track< (plist->num_tracks-1))
+               start_track(++current_track);
+            else
+               is_playing_ = false;
+         }
+         else
+            mp3_backend_render(audio_buffer, 735);
+      }
+      else if (use_xmp_)
+      {
+         if (xmp_backend_ended())
+         {
+            if(current_track< (plist->num_tracks-1))
+               start_track(++current_track);
+            else
+               is_playing_ = false;
+         }
+         else
+            xmp_backend_render(audio_buffer, 735);
+      }
+      else if (use_vgm_)
+      {
+         if (vgm_backend_ended())
+         {
+            if(current_track< (plist->num_tracks-1))
+               start_track(++current_track);
+            else
+               is_playing_ = false;
+         }
+         else
+            vgm_backend_render(audio_buffer, 735);
+      }
+      else if(gme_track_ended(emu))
+      {
+         if(current_track< (plist->num_tracks-1))
+            start_track(++current_track);
+         else
+            is_playing_ = false;
+      }
+      else
+         gme_play( emu, 1470, audio_buffer );
+   }
+   else
+      memset(audio_buffer,0,8192 * sizeof(short));
+   return audio_buffer;
+}
+
+void next_track(void)
+{
+   if(current_track< (plist->num_tracks-1))
+      start_track(++current_track);
+}
+
+void prev_track(void)
+{
+   if(current_track > 0)
+      start_track(--current_track);
+}
+
+char *get_game_name(char *buf)
+{
+   if (track)
+      sprintf(buf, "%s",track->game_name);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_track_count(char *buf)
+{
+   if (plist)
+      sprintf(buf, "%d/%d",current_track+1,plist->num_tracks);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_song_name(char *buf)
+{
+   if (track)
+      sprintf(buf, "%s",track->track_name);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_track_position(char *buf)
+{
+   if (track && (emu || use_xmp_ || use_mp3_ || use_midi_)) {
+      long seconds         = track->track_length / 1000;
+      long elapsed_seconds = (use_midi_ ? midi_backend_tell_ms() : use_mp3_ ? mp3_backend_tell_ms() : use_xmp_ ? xmp_backend_tell_ms() : use_vgm_ ? vgm_backend_tell_ms() : gme_tell(emu)) / 1000;
+      sprintf(buf, "(%ld:%02ld / %ld:%02ld)",elapsed_seconds/60,elapsed_seconds%60,seconds/60,seconds % 60);
+   } else {
+      buf[0] = '\0';
+   }
+   return buf;
+}
+
+int get_track_elapsed_frames(void)
+{
+   if (use_midi_)
+      return midi_backend_tell_samples() / 1470;
+   if (use_mp3_)
+      return mp3_backend_tell_samples() / 1470;
+   if (use_xmp_)
+      return xmp_backend_tell_samples() / 1470;
+   if (use_vgm_)
+      return vgm_backend_tell_samples() / 1470;
+   if (emu)
+      return gme_tell_samples(emu) / 1470;
+   return 0;
+}
+
+void play_pause(void)
+{
+   is_playing_ = !is_playing_;
+}
+
+
+/* ---- textos do novo layout ---- */
+
+char *get_system_line(char *buf)
+{
+   const char *sys = "";
+   const char *dot;
+   char ext[12];
+   int i = 0;
+
+   buf[0] = '\0';
+   if (!track || !file)
+      return buf;
+
+   if (file->is_midi)
+      sys = midi_backend_is_gm() ? "General MIDI" : "Roland MT-32";
+   else if (file->is_mp3)
+      sys = "Audio Digital";
+   else if (file->is_tracker)
+      sys = "Amiga / Tracker";
+   else if (file->file_type == gme_spc_type)
+      sys = "Super Nintendo";
+   else if (file->file_type == gme_nsf_type || file->file_type == gme_nsfe_type)
+      sys = "Nintendo NES";
+   else if (file->file_type == gme_gbs_type)
+      sys = "Game Boy";
+   else if (file->file_type == gme_gym_type)
+      sys = "Sega Genesis";
+   else if (file->file_type == gme_vgm_type || file->file_type == gme_vgz_type)
+      sys = "Sega / Arcade";
+   else if (file->file_type == gme_hes_type)
+      sys = "TurboGrafx-16";
+   else if (file->file_type == gme_kss_type)
+      sys = "MSX / Master System";
+   else if (file->file_type == gme_ay_type)
+      sys = "ZX Spectrum";
+   else if (file->file_type == gme_sap_type)
+      sys = "Atari XL/XE";
+
+   dot = strrchr(file->name, '.');
+   if (dot)
+      for (dot++; *dot && i < 10; dot++, i++)
+         ext[i] = (*dot >= 'a' && *dot <= 'z') ? (char)(*dot - 32) : *dot;
+   ext[i] = '\0';
+
+   if (sys[0] && ext[0])
+      snprintf(buf, 96, "%s - %s", sys, ext);
+   else if (sys[0])
+      snprintf(buf, 96, "%s", sys);
+   else
+      snprintf(buf, 96, "%s", ext);
+   return buf;
+}
+
+char *get_track_label(char *buf)
+{
+   if (plist)
+      sprintf(buf, "Track %02d / %02d", current_track + 1, plist->num_tracks);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_time_text(char *buf)
+{
+   if (track && (emu || use_xmp_ || use_mp3_ || use_midi_))
+   {
+      long total   = track->track_length / 1000;
+      long elapsed = (use_midi_ ? midi_backend_tell_ms() : use_mp3_ ? mp3_backend_tell_ms() : use_xmp_ ? xmp_backend_tell_ms() : use_vgm_ ? vgm_backend_tell_ms() : gme_tell(emu)) / 1000;
+      sprintf(buf, "%02ld:%02ld / %02ld:%02ld", elapsed / 60, elapsed % 60, total / 60, total % 60);
+   }
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_rate_text(char *buf)
+{
+   sprintf(buf, "%ld.%ld kHz", sample_rate_ / 1000, (sample_rate_ % 1000) / 100);
+   return buf;
+}
+
+int get_track_progress_permille(void)
+{
+   long total, elapsed;
+   if (!(track && (emu || use_xmp_ || use_mp3_ || use_midi_)))
+      return 0;
+   total = track->track_length;
+   if (total <= 0)
+      return 0;
+   elapsed = use_midi_ ? midi_backend_tell_ms() : use_mp3_ ? mp3_backend_tell_ms() : use_xmp_ ? xmp_backend_tell_ms() : use_vgm_ ? vgm_backend_tell_ms() : gme_tell(emu);
+   if (elapsed < 0)     elapsed = 0;
+   if (elapsed > total) elapsed = total;
+   return (int)((double)elapsed * 1000.0 / (double)total);
+}
+
+
+/* ---- deteccao do(s) chip(s) de audio ---- */
+
+typedef struct { int off; int minver; const char *name; } chip_entry;
+
+static const chip_entry chip_tab[] = {
+   {0x0C,0x100,"SN76489"},{0x10,0x100,"YM2413"},{0x2C,0x110,"YM2612"},{0x30,0x110,"YM2151"},
+   {0x38,0x151,"SegaPCM"},{0x40,0x151,"RF5C68"},{0x44,0x151,"YM2203"},{0x48,0x151,"YM2608"},
+   {0x4C,0x151,"YM2610"},{0x50,0x151,"YM3812"},{0x54,0x151,"YM3526"},{0x58,0x151,"Y8950"},
+   {0x5C,0x151,"YMF262"},{0x60,0x151,"YMF278B"},{0x64,0x151,"YMF271"},{0x68,0x151,"YMZ280B"},
+   {0x6C,0x151,"RF5C164"},{0x70,0x151,"PWM"},{0x74,0x151,"AY8910"},
+   {0x80,0x161,"GB DMG"},{0x84,0x161,"NES APU"},{0x88,0x161,"MultiPCM"},{0x8C,0x161,"uPD7759"},
+   {0x90,0x161,"OKIM6258"},{0x98,0x161,"OKIM6295"},{0x9C,0x161,"K051649"},{0xA0,0x161,"K054539"},
+   {0xA4,0x161,"HuC6280"},{0xA8,0x161,"C140"},{0xAC,0x161,"K053260"},{0xB0,0x161,"POKEY"},
+   {0xB4,0x161,"QSound"},{0xB8,0x171,"SCSP"},{0xC0,0x171,"WonderSwan"},{0xC4,0x171,"VSU-VUE"},
+   {0xC8,0x171,"SAA1099"},{0xCC,0x171,"ES5503"},{0xD0,0x171,"ES5506"},{0xD4,0x171,"X1-010"},
+   {0xD8,0x171,"C352"},{0xDC,0x171,"GA20"},
+   {0xE4,0x171,"Mikey"},{0xE8,0x171,"K007232"},{0xEC,0x171,"K005289"},
+   {0xF0,0x171,"MSM5205"},{0xF4,0x171,"MSM5232"},{0xF8,0x171,"BSMT2000"},
+   {0xFC,0x171,"ICS2115"}
+};
+
+static char chip_text[128];
+
+static unsigned long rd_le32(const unsigned char *p)
+{
+   return (unsigned long)p[0] | ((unsigned long)p[1] << 8) |
+          ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+}
+
+static void chip_add(const char *name, int dual, int *shown, int *count)
+{
+   size_t l = strlen(chip_text);
+   (*count)++;
+   if (*shown >= 3)
+      return;
+   snprintf(chip_text + l, sizeof(chip_text) - l, "%s%s%s",
+            l ? " + " : "", name, dual ? " x2" : "");
+   (*shown)++;
+}
+
+/* le os primeiros 256 bytes do VGM (descomprime se for gzip) */
+static int vgm_read_header(const unsigned char *d, int len, unsigned char *out)
+{
+   int n;
+   if (len >= 2 && d[0] == 0x1F && d[1] == 0x8B)
+   {
+      z_stream zs;
+      int r;
+      memset(&zs, 0, sizeof(zs));
+      if (inflateInit2(&zs, 15 + 16) != Z_OK)
+         return 0;
+      zs.next_in   = (Bytef*)d;
+      zs.avail_in  = (uInt)len;
+      zs.next_out  = out;
+      zs.avail_out = 256;
+      r = inflate(&zs, Z_SYNC_FLUSH);
+      n = 256 - (int)zs.avail_out;
+      inflateEnd(&zs);
+      if (r != Z_OK && r != Z_STREAM_END && r != Z_BUF_ERROR)
+         return 0;
+      return n;
+   }
+   n = len < 256 ? len : 256;
+   memcpy(out, d, n);
+   return n;
+}
+
+static void detect_chips(void)
+{
+   int shown = 0, count = 0;
+   const unsigned char *d;
+   chip_text[0] = '\0';
+   if (!file)
+      return;
+   d = (const unsigned char*)file->data;
+
+   if (file->is_midi)
+   {
+      strcpy(chip_text, midi_backend_is_gm() ? "GM" : "MT-32");
+      return;
+   }
+
+   if (file->is_mp3)
+   {
+      strcpy(chip_text, "MP3");
+      return;
+   }
+
+   if (file->is_tracker)
+   {
+      const char *dt = strrchr(file->name, '.');
+      int is_mod = dt && (dt[1]=='m'||dt[1]=='M') && (dt[2]=='o'||dt[2]=='O')
+                      && (dt[3]=='d'||dt[3]=='D') && dt[4]=='\0';
+      strcpy(chip_text, is_mod ? "AMIGA: MIX. PAULA" : "TRACKER");
+      return;
+   }
+
+   if (file->file_type == gme_vgm_type || file->file_type == gme_vgz_type)
+   {
+      unsigned char h[256];
+      int n = vgm_read_header(d, file->length, h);
+      if (n >= 0x40 && memcmp(h, "Vgm ", 4) == 0)
+      {
+         unsigned long ver = rd_le32(h + 0x08);
+         int hdrlen = 0x40, i;
+         if (ver >= 0x150)
+         {
+            unsigned long dof = rd_le32(h + 0x34);
+            if (dof)
+               hdrlen = 0x34 + (int)dof;
+         }
+         for (i = 0; i < (int)(sizeof(chip_tab) / sizeof(chip_tab[0])); i++)
+         {
+            unsigned long clk;
+            if (ver < (unsigned long)chip_tab[i].minver)
+               continue;
+            if (chip_tab[i].off + 4 > hdrlen || chip_tab[i].off + 4 > n)
+               continue;
+            clk = rd_le32(h + chip_tab[i].off);
+            if (clk & 0x3FFFFFFFUL)
+            {
+               const char *nm = chip_tab[i].name;
+               if (chip_tab[i].off == 0x4C && (clk & 0x80000000UL))
+                  nm = "YM2610B";
+               chip_add(nm, (clk & 0x40000000UL) != 0, &shown, &count);
+            }
+         }
+         if (count > shown)
+         {
+            size_t l = strlen(chip_text);
+            snprintf(chip_text + l, sizeof(chip_text) - l, " + %d", count - shown);
+         }
+      }
+      if (!chip_text[0])
+         strcpy(chip_text, "VGM");
+      return;
+   }
+
+   if (file->file_type == gme_spc_type)
+   {
+      chip_add("S-SMP", 0, &shown, &count);
+      chip_add("S-DSP", 0, &shown, &count);
+   }
+   else if (file->file_type == gme_nsf_type || file->file_type == gme_nsfe_type)
+   {
+      chip_add("2A03", 0, &shown, &count);
+      if (file->file_type == gme_nsf_type && file->length > 0x7C && memcmp(d, "NESM", 4) == 0)
+      {
+         unsigned f = d[0x7B];
+         if (f & 0x01) chip_add("VRC6", 0, &shown, &count);
+         if (f & 0x02) chip_add("VRC7", 0, &shown, &count);
+         if (f & 0x04) chip_add("FDS", 0, &shown, &count);
+         if (f & 0x08) chip_add("MMC5", 0, &shown, &count);
+         if (f & 0x10) chip_add("N163", 0, &shown, &count);
+         if (f & 0x20) chip_add("FME7", 0, &shown, &count);
+      }
+   }
+   else if (file->file_type == gme_gbs_type)
+      chip_add("GB DMG", 0, &shown, &count);
+   else if (file->file_type == gme_gym_type)
+   {
+      chip_add("YM2612", 0, &shown, &count);
+      chip_add("SN76489", 0, &shown, &count);
+   }
+   else if (file->file_type == gme_hes_type)
+      chip_add("HuC6280", 0, &shown, &count);
+   else if (file->file_type == gme_kss_type)
+   {
+      chip_add("AY8910", 0, &shown, &count);
+      chip_add("SN76489", 0, &shown, &count);
+      chip_add("SCC", 0, &shown, &count);
+   }
+   else if (file->file_type == gme_ay_type)
+      chip_add("AY-3-8910", 0, &shown, &count);
+   else if (file->file_type == gme_sap_type)
+      chip_add("POKEY", 0, &shown, &count);
+
+   if (count > shown)
+   {
+      size_t l = strlen(chip_text);
+      snprintf(chip_text + l, sizeof(chip_text) - l, " + %d", count - shown);
+   }
+}
+
+char *get_chip_text(char *buf)
+{
+   if (track && chip_text[0])
+      snprintf(buf, 128, "%s", chip_text);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+=== src/player.h ===
+#ifndef GME_LIBRETRO_PLAYER_H__
+#define GME_LIBRETRO_PLAYER_H__
+#include <stdlib.h>
+#include <boolean.h>
+#include "gme.h"
+
+bool is_emu_loaded(void);
+
+bool open_file(const char *path, long sample_rate);
+
+void set_system_dir(const char *dir);
+
+void close_file(void);
+
+void start_track(int track);
+
+short *play(void);
+
+void next_track(void);
+
+void prev_track(void);
+
+char *get_game_name(char *buf);
+
+char *get_track_count(char *buf);
+
+char *get_song_name(char *buf);
+
+char *get_track_position(char *buf);
+
+int get_track_elapsed_frames(void);
+
+void play_pause(void);
+
+char *get_system_line(char *buf);
+
+char *get_track_label(char *buf);
+
+char *get_time_text(char *buf);
+
+char *get_rate_text(char *buf);
+
+int get_track_progress_permille(void);
+
+char *get_chip_text(char *buf);
+
+#endif
+=== src/libretro.c ===
+#include <string.h>
+#include <stdlib.h>
+#include <assert.h>
+
+#include <libretro.h>
+#include <retro_miscellaneous.h>
+#include <streams/file_stream.h>
+
+#include "graphics.h"
+#include "player.h"
+#include "spectrum.h"
+
+// Static globals
+static surface *framebuffer = NULL;
+static uint16_t previnput = 0;
+
+// Callbacks
+
+retro_log_printf_t log_cb;
+
+static retro_video_refresh_t video_cb;
+static retro_input_poll_t input_poll_cb;
+static retro_input_state_t input_state_cb;
+static retro_environment_t environ_cb;
+static retro_audio_sample_t audio_cb;
+static retro_audio_sample_batch_t audio_batch_cb;
+// libretro global setters
+void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
+void retro_set_input_poll(retro_input_poll_t cb) { input_poll_cb = cb; }
+void retro_set_input_state(retro_input_state_t cb) { input_state_cb = cb; }
+
+void retro_set_environment(retro_environment_t cb)
+{
+   struct retro_vfs_interface_info vfs_iface_info;
+   environ_cb = cb;
+
+   vfs_iface_info.required_interface_version = 1;
+   vfs_iface_info.iface                      = NULL;
+   if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_iface_info))
+      filestream_vfs_init(&vfs_iface_info);
+}
+
+void retro_set_audio_sample(retro_audio_sample_t cb) { audio_cb = cb; }
+void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_cb = cb; }
+
+unsigned retro_api_version(void) { return RETRO_API_VERSION; }
+unsigned retro_get_region(void) { return RETRO_REGION_PAL; }
+
+// Serialisation methods
+size_t retro_serialize_size(void) { return 0; }
+bool retro_serialize(void *data, size_t size) { return false; }
+bool retro_unserialize(const void *data, size_t size) { return false; }
+
+// libretro unused api functions
+void retro_set_controller_port_device(unsigned port, unsigned device) {}
+void *retro_get_memory_data(unsigned id) { return NULL; }
+size_t retro_get_memory_size(unsigned id){ return 0; }
+
+// Cheats
+void retro_cheat_reset(void) {}
+void retro_cheat_set(unsigned index, bool enabled, const char *code) {}
+
+/* ---- desenho de texto (sem alocar memoria, com clip) ---- */
+
+static void put_glyph(unsigned char ch, int px, int py, unsigned short color, int cx0, int cx1)
+{
+   int x, y, sx, sy;
+   int charx = (ch % 16) * 8;
+   int chary = (ch >> 4) * 8;
+   for (y = 0; y < 8; y++)
+   {
+      for (x = 0; x < 8; x++)
+      {
+         if (!is_font_pixel(charx + x, chary + y))
+            continue;
+         for (sy = 0; sy < 2; sy++)
+         {
+            int yy = py + y * 2 + sy;
+            if (yy < 0 || yy >= 480)
+               continue;
+            for (sx = 0; sx < 2; sx++)
+            {
+               int xx = px + x * 2 + sx;
+               if (xx < cx0 || xx >= cx1 || xx < 0 || xx >= 640)
+                  continue;
+               set_pixel(framebuffer, xx, yy, color);
+            }
+         }
+      }
+   }
+}
+
+/* colunas realmente usadas pelo glifo (para espacamento proporcional) */
+static void glyph_extent(unsigned char ch, int *x0, int *x1)
+{
+   int x, y;
+   int charx = (ch % 16) * 8;
+   int chary = (ch >> 4) * 8;
+   *x0 = 8;
+   *x1 = -1;
+   for (x = 0; x < 8; x++)
+      for (y = 0; y < 8; y++)
+         if (is_font_pixel(charx + x, chary + y))
+         {
+            if (x < *x0) *x0 = x;
+            if (x > *x1) *x1 = x;
+         }
+}
+
+static int text_width_prop(const char *text)
+{
+   int w = 0, x0, x1;
+   for (; *text; text++)
+   {
+      glyph_extent((unsigned char)*text, &x0, &x1);
+      w += (x1 < 0) ? 4 : (x1 - x0 + 2);
+   }
+   w = w > 0 ? w - 1 : 0;
+   return w * 2;
+}
+
+static void draw_text_prop(const char *text, int x, int y, unsigned short color)
+{
+   int x0, x1;
+   for (; *text; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      glyph_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += 4 * 2;
+         continue;
+      }
+      put_glyph(ch, x - x0 * 2, y, color, 0, 640);
+      x += (x1 - x0 + 2) * 2;
+   }
+}
+
+/* texto monoespacado; se passar de maxw, rola de um lado para o outro */
+static void draw_text_scroll(const char *text, int x, int y, int maxw, unsigned short color)
+{
+   int len   = (int)strlen(text);
+   int textw = len * 8 * 2;
+   int off   = 0, i;
+
+   if (textw > maxw)
+   {
+      int delta  = textw - maxw;
+      int delay  = 30;
+      int modulo = delta + delay * 2;
+      int frames = get_track_elapsed_frames();
+      off = (modulo - abs((frames / 2) % (2 * modulo) - modulo)) - delay;
+      if (off < 0)     off = 0;
+      if (off > delta) off = delta;
+   }
+
+   for (i = 0; i < len; i++)
+   {
+      int gx = x - off + i * 8 * 2;
+      if (gx + 8 * 2 <= x || gx >= x + maxw)
+         continue;
+      put_glyph((unsigned char)text[i], gx, y, color, x, x + maxw);
+   }
+}
+
+/* texto proporcional cortado em maxx */
+static void draw_text_prop_clip(const char *text, int x, int y, unsigned short color, int maxx)
+{
+   int x0, x1;
+   for (; *text && x < maxx; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      glyph_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += 4 * 2;
+         continue;
+      }
+      put_glyph(ch, x - x0 * 2, y, color, 0, maxx);
+      x += (x1 - x0 + 2) * 2;
+   }
+}
+
+/* LED de atividade: acende com o volume do audio e decai rapido */
+static int led_level = 0;
+
+static void led_update(const short *audio, int n)
+{
+   int i, pk = 0, cur;
+   for (i = 0; i < n; i++)
+   {
+      int v = audio[i];
+      if (v < 0) v = -v;
+      if (v > pk) pk = v;
+   }
+   cur = pk / 40;
+   if (cur > 255) cur = 255;
+   led_level = (led_level * 192) >> 8;
+   if (cur > led_level)
+      led_level = cur;
+}
+
+static void draw_led(int cx, int cy)
+{
+   int dx, dy;
+   int t = led_level;
+   int r = 8 + (23 * t) / 255, g = 3 + (9 * t) / 255, b = 2 + (5 * t) / 255;
+   unsigned short col;
+   if (t < 48) /* em repouso/fraco: escurece; acima disso fica igual */
+   {
+      r = 3 + ((r - 3) * t) / 48;
+      g = 1 + ((g - 1) * t) / 48;
+      b = 1 + ((b - 1) * t) / 48;
+   }
+   col = get_color(r, g, b);
+   for (dy = -6; dy <= 6; dy++)
+      for (dx = -6; dx <= 6; dx++)
+         if (dx * dx + dy * dy <= 40)
+            set_pixel(framebuffer, cx + dx, cy + dy, col);
+   if (t > 200)
+      set_pixel(framebuffer, cx - 2, cy - 2, get_color(31, 40, 30));
+}
+
+/* ---- layout: cabecalho / espectro / progresso ---- */
+#define UI_LEFT   32
+#define UI_RIGHT  608
+#define UI_W      (UI_RIGHT - UI_LEFT)
+
+/* Cabecalho: 4 linhas, uma por faixa do fundo (y = topo do texto).
+ * 1) chip  2) sistema  3) jogo  4) faixa + Track N/M.
+ * HDR_TEXT_MAX_X: limite direito das linhas 1-3 (o logo comeca depois). */
+#define HDR_Y1 24
+#define HDR_Y2 60
+#define HDR_Y3 96
+#define HDR_Y4 132
+#define HDR_TEXT_MAX_X 416
+
+/* ---- fonte do CHIP: Press Start 2P (src/font_chip.h) com degrade vertical ---- */
+#include "font_chip.h"
+
+#define CHIP_SPACE 5   /* largura do espaco (px do atlas) */
+
+static unsigned short chip_grad[8];
+
+static void chip_grad_init(void)
+{
+   /* degrade da imagem de referencia: azul -> branco (topo), dourado -> creme (base) */
+   static const unsigned char rgb[8][3] = {
+      { 69, 149, 204}, {135, 190, 231}, {212, 237, 253}, {255, 255, 255},
+      {183, 129,  41}, {229, 185,  87}, {252, 245, 232}, {252, 245, 232}
+   };
+   int i;
+   for (i = 0; i < 8; i++)
+      chip_grad[i] = get_color(rgb[i][0] >> 3, rgb[i][1] >> 2, rgb[i][2] >> 3);
+}
+
+static int chip_pixel(unsigned char ch, int x, int y)
+{
+   const unsigned short *p = (const unsigned short *)font_chip.pixel_data;
+   return p[(ch % 16) * 8 + x + ((ch >> 4) * 8 + y) * 128] == 0;
+}
+
+static void chip_extent(unsigned char ch, int *x0, int *x1)
+{
+   int x, y;
+   *x0 = 8;
+   *x1 = -1;
+   for (x = 0; x < 8; x++)
+      for (y = 0; y < 8; y++)
+         if (chip_pixel(ch, x, y))
+         {
+            if (x < *x0) *x0 = x;
+            if (x > *x1) *x1 = x;
+         }
+}
+
+static void chip_put_glyph(unsigned char ch, int px, int py, int cx1)
+{
+   int x, y, sx, sy;
+   for (y = 0; y < 8; y++)
+      for (x = 0; x < 8; x++)
+      {
+         if (!chip_pixel(ch, x, y))
+            continue;
+         for (sy = 0; sy < 2; sy++)
+         {
+            int yy = py + y * 2 + sy;
+            if (yy < 0 || yy >= 480)
+               continue;
+            for (sx = 0; sx < 2; sx++)
+            {
+               int xx = px + x * 2 + sx;
+               if (xx < 0 || xx >= 640 || xx >= cx1)
+                  continue;
+               set_pixel(framebuffer, xx, yy, chip_grad[y]);
+            }
+         }
+      }
+}
+
+static int chip_text_width(const char *text)
+{
+   int w = 0, x0, x1;
+   for (; *text; text++)
+   {
+      chip_extent((unsigned char)*text, &x0, &x1);
+      w += (x1 < 0) ? CHIP_SPACE : (x1 - x0 + 2);
+   }
+   w = w > 0 ? w - 1 : 0;
+   return w * 2;
+}
+
+/* maxx = limite direito absoluto (x) */
+static void chip_draw_text(const char *text, int x, int y, int maxx)
+{
+   int x0, x1;
+   chip_grad_init();
+   for (; *text && x < maxx; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      chip_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += CHIP_SPACE * 2;
+         continue;
+      }
+      chip_put_glyph(ch, x - x0 * 2, y, maxx);
+      x += (x1 - x0 + 2) * 2;
+   }
+}
+
+static void draw_ui(void)
+{
+   char message[512];
+   int w, prog;
+
+   /* cabecalho: linha 4 = faixa (esq) + Track N/M (dir) */
+   get_track_label(message);
+   w = text_width_prop(message);
+   draw_text_prop(message, UI_RIGHT - w, HDR_Y4, get_color(28, 56, 28));
+   draw_text_scroll(get_song_name(message), UI_LEFT, HDR_Y4, UI_W - w - 16, get_color(30, 58, 25));
+
+   /* linha 3 = jogo */
+   draw_text_scroll(get_game_name(message), UI_LEFT, HDR_Y3, HDR_TEXT_MAX_X - UI_LEFT, get_color(19, 36, 27));
+
+   /* linha 2 = sistema */
+   get_system_line(message);
+   draw_text_prop_clip(message, UI_LEFT, HDR_Y2, get_color(15, 33, 21), HDR_TEXT_MAX_X);
+
+   /* linha 1 = CHIP: (led) chip de audio - Press Start 2P com degrade */
+   {
+      int lx = UI_LEFT + chip_text_width("CHIP:") + 16;
+      chip_draw_text("CHIP:", UI_LEFT, HDR_Y1, HDR_TEXT_MAX_X);
+      draw_led(lx + 6, HDR_Y1 + 6);
+      chip_draw_text(get_chip_text(message), lx + 24, HDR_Y1, HDR_TEXT_MAX_X);
+   }
+
+   /* barra de progresso (proxima ao espectro, cuja base fica em y=408) */
+   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 413, UI_W, 12);
+   prog = get_track_progress_permille();
+   if (prog > 0)
+      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 413, (UI_W * prog) / 1000, 12);
+
+   /* tempo (esquerda) e taxa de amostragem (direita) */
+   draw_text_prop(get_time_text(message), UI_LEFT, 442, get_color(27, 54, 29));
+
+   get_rate_text(message);
+   w = text_width_prop(message);
+   draw_text_prop(message, UI_RIGHT - w, 442, get_color(15, 33, 21));
+}
+
+/* ---- osciloscopio estereo (espaco entre o cabecalho e o espectro) ---- */
+#define WAVE_TOP  167
+#define WAVE_H    48
+#define WAVE_GAP  10
+
+static void draw_wave_channel(const short *audio, int frames, int offset,
+                               int y0, int h, unsigned short color, int gain_q8)
+{
+   int x, px = -1, py = 0;
+   int mid = y0 + h / 2;
+
+   draw_line(framebuffer, get_color(4, 7, 8), UI_LEFT, mid, UI_RIGHT, mid);
+
+   for (x = 0; x < UI_W; x++)
+   {
+      int idx = (x * frames) / UI_W;
+      int s   = audio[idx * 2 + offset];
+      int v = (s * gain_q8) >> 8;
+      int y = mid - (v * (h / 2)) / 32768;
+      if (y < y0)         y = y0;
+      if (y >= y0 + h)     y = y0 + h - 1;
+      if (px >= 0)
+         draw_line(framebuffer, color, UI_LEFT + px, py, UI_LEFT + x, y);
+      px = x;
+      py = y;
+   }
+}
+
+/* Janela do osciloscopio: WAVE_SPAN amostras (por canal) mais recentes.
+ * 735 = 1 quadro (~16,7 ms); maior = mais oscilacoes visiveis na tela.
+ * WAVE_RING deve ser potencia de 2 e maior que WAVE_SPAN. */
+#define WAVE_SPAN 1470
+#define WAVE_RING 8192
+
+static short wave_ring[WAVE_RING * 2];
+static short wave_lin[WAVE_SPAN * 2];
+static unsigned wave_pos = 0;
+
+/* Ganho automatico do osciloscopio (mais movimento nas ondas) */
+#define WAVE_TARGET   28000   /* pico alvo (max 32767) */
+#define WAVE_MAX_GAIN 12      /* ganho maximo (x) */
+#define WAVE_MIN_PEAK 1500    /* abaixo disso nao amplia mais (evita ruido) */
+
+static int wave_peak[2] = { 0, 0 };
+
+static void draw_waveform(const short *audio, int frames)
+{
+   int i, ch;
+   int gain[2];
+   unsigned start;
+
+   for (i = 0; i < frames; i++)
+   {
+      unsigned p = wave_pos & (WAVE_RING - 1);
+      wave_ring[p * 2]     = audio[i * 2];
+      wave_ring[p * 2 + 1] = audio[i * 2 + 1];
+      wave_pos++;
+   }
+
+   start = wave_pos - WAVE_SPAN;
+   for (i = 0; i < WAVE_SPAN; i++)
+   {
+      unsigned p = (start + (unsigned)i) & (WAVE_RING - 1);
+      wave_lin[i * 2]     = wave_ring[p * 2];
+      wave_lin[i * 2 + 1] = wave_ring[p * 2 + 1];
+   }
+
+   for (ch = 0; ch < 2; ch++)
+   {
+      int pk = 0;
+      for (i = 0; i < WAVE_SPAN; i++)
+      {
+         int s = wave_lin[i * 2 + ch];
+         if (s < 0) s = -s;
+         if (s > pk) pk = s;
+      }
+      wave_peak[ch] -= wave_peak[ch] / 32;      /* decai devagar */
+      if (pk > wave_peak[ch]) wave_peak[ch] = pk;
+      pk = wave_peak[ch];
+      if (pk < WAVE_MIN_PEAK) pk = WAVE_MIN_PEAK;
+      gain[ch] = (WAVE_TARGET * 256) / pk;      /* ponto fixo 8.8 */
+      if (gain[ch] > WAVE_MAX_GAIN * 256) gain[ch] = WAVE_MAX_GAIN * 256;
+      if (gain[ch] < 256) gain[ch] = 256;
+   }
+
+   draw_wave_channel(wave_lin, WAVE_SPAN, 0, WAVE_TOP, WAVE_H, get_color(10, 28, 31), gain[0]);
+   draw_wave_channel(wave_lin, WAVE_SPAN, 1, WAVE_TOP + WAVE_H + WAVE_GAP, WAVE_H, get_color(28, 12, 27), gain[1]);
+}
+
+void retro_get_system_info(struct retro_system_info *info)
+{
+   memset(info, 0, sizeof(*info));
+   info->library_name = "Game Music Emulator";
+   info->library_version = "v0.6.6";
+   info->need_fullpath = true;
+   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|mod|s3m|xm|it|mp3|mid|midi|zip";
+   info->block_extract = true;
+}
+
+/*
+ * Tell libretro about the AV system; the fps, sound sample rate and the
+ * resolution of the display.
+ */
+void retro_get_system_av_info(struct retro_system_av_info *info)
+{
+   int pixel_format = RETRO_PIXEL_FORMAT_RGB565;
+   memset(info, 0, sizeof(*info));
+   info->timing.fps            = 60.0f;
+   info->timing.sample_rate    = 44100;
+   info->geometry.base_width   = 640;
+   info->geometry.base_height  = 480;
+   info->geometry.max_width    = 640;
+   info->geometry.max_height   = 480;
+   info->geometry.aspect_ratio = 640.0f / 480.0f;
+   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
+}
+
+void retro_init(void)
+{
+   unsigned level = 0;
+   /* set up some logging */
+   struct retro_log_callback log;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+      log_cb = log.log;
+   else
+      log_cb = NULL;
+
+   // the performance level is guide to frontend to give an idea of how intensive this core is to run
+   environ_cb(RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL, &level);
+   framebuffer = create_surface(640,480,2);
+}
+
+// End of retrolib
+void retro_deinit(void)
+{
+   if (framebuffer)
+      free_surface(framebuffer);
+   framebuffer = NULL;
+}
+
+// Reset gme
+void retro_reset(void)
+{
+    start_track(0);
+}
+
+// Run a single frame
+void retro_run(void)
+{
+   uint16_t input = 0;
+   uint16_t realinput = 0;
+   int i;
+   short *audio;
+
+   // input handling
+   input_poll_cb();
+   for(i=0;i<16;i++)
+   {
+      if(input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, i))
+         realinput |= 1<<i;
+   }
+   input = realinput & ~previnput;
+   previnput = realinput;
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_L))
+      prev_track();
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_R))
+      next_track();
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_START))
+      play_pause();
+
+   //audio primeiro, para o espectro usar os samples deste frame
+   audio = play();
+   led_update(audio, 1470);
+   spectrum_push(audio, 735);
+   spectrum_update();
+
+   //graphic handling
+   spectrum_draw_background(framebuffer);
+   draw_ui();
+   draw_waveform(audio, 735);
+   spectrum_draw_bars(framebuffer);
+   video_cb(framebuffer->pixel_data, framebuffer->width, framebuffer->height, framebuffer->bytes_per_pixel * framebuffer->width);
+   //audio handling
+   audio_batch_cb(audio,735);
+}
+
+// File Loading
+bool retro_load_game(const struct retro_game_info *info)
+{
+   const char *sysdir = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysdir) && sysdir)
+      set_system_dir(sysdir);
+   if (info && open_file(info->path, 44100))
+      return true;
+   return false;
+}
+
+bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info)
+{
+   return false;
+}
+
+void retro_unload_game(void)
+{
+   close_file();
+}

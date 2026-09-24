@@ -1,0 +1,274 @@
+#include <stdio.h>
+#include <string.h>
+#include <boolean.h>
+#include "player.h"
+#include "playlist.h"
+#include "fileformat.h"
+#include "libretro.h"
+#include "vgm_backend.h"
+
+extern retro_log_printf_t log_cb;
+
+static playlist *plist = NULL;
+static gme_track_data *track = NULL;
+static gme_file_data *file = NULL;
+static int prev_fileid;
+Music_Emu* emu = NULL;
+static short audio_buffer[8192];
+static bool is_playing_;
+static bool use_vgm_ = false;
+static long sample_rate_;
+static int current_track;
+
+bool is_emu_loaded(void)
+{
+   return (emu != NULL);
+}
+
+bool open_file(const char *path, long sample_rate)
+{
+   sample_rate_  = sample_rate;
+   current_track = 0;
+   prev_fileid   = -1;
+
+   if(get_playlist(path,&plist))
+   {
+      start_track(current_track);
+      return true;
+   }
+   return false;
+}
+
+void close_file(void)
+{
+   vgm_backend_close();
+   use_vgm_ = false;
+   gme_delete(emu);
+   emu = NULL;
+   if(plist!=NULL)
+      cleanup_playlist(plist);
+   plist = NULL;
+   track = NULL;
+}
+
+void start_track(int tracknr)
+{
+   memset(audio_buffer,0,8192 * sizeof(short));
+   vgm_backend_close();
+   use_vgm_ = false;
+   current_track = tracknr;
+   track = plist->tracks[tracknr];
+   if(track)
+   {
+      is_playing_ = false;
+      file = plist->files[track->file_id];
+      prev_fileid = track->file_id;
+      if (emu)
+         gme_delete (emu);
+      emu = gme_new_emu(file->file_type,sample_rate_);
+      gme_load_data(emu,file->data,file->length);
+      is_playing_ = true;
+
+      /* VGM/VGZ: o audio vem da libvgm (todos os chips do VGMPlay) */
+      if (file->file_type == gme_vgm_type || file->file_type == gme_vgz_type)
+      {
+         if (vgm_backend_open((const unsigned char*)file->data, file->length, sample_rate_) == 0)
+            use_vgm_ = true;
+         else
+            log_cb(RETRO_LOG_ERROR, "[GME] libvgm falhou, usando GME para este arquivo.\n");
+      }
+   }
+   else
+   {
+      log_cb(RETRO_LOG_ERROR, "[GME] Error: Unknown track type.\n" );
+      is_playing_ = false;
+   }
+   if (is_playing_)
+      gme_start_track(emu, track->track_id);
+}
+
+short *play(void)
+{
+   if (is_playing_)
+   {
+      if (use_vgm_)
+      {
+         if (vgm_backend_ended())
+         {
+            if(current_track< (plist->num_tracks-1))
+               start_track(++current_track);
+            else
+               is_playing_ = false;
+         }
+         else
+            vgm_backend_render(audio_buffer, 735);
+      }
+      else if(gme_track_ended(emu))
+      {
+         if(current_track< (plist->num_tracks-1))
+            start_track(++current_track);
+         else
+            is_playing_ = false;
+      }
+      else
+         gme_play( emu, 1470, audio_buffer );
+   }
+   else
+      memset(audio_buffer,0,8192 * sizeof(short));
+   return audio_buffer;
+}
+
+void next_track(void)
+{
+   if(current_track< (plist->num_tracks-1))
+      start_track(++current_track);
+}
+
+void prev_track(void)
+{
+   if(current_track > 0)
+      start_track(--current_track);
+}
+
+char *get_game_name(char *buf)
+{
+   if (track)
+      sprintf(buf, "%s",track->game_name);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_track_count(char *buf)
+{
+   if (plist)
+      sprintf(buf, "%d/%d",current_track+1,plist->num_tracks);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_song_name(char *buf)
+{
+   if (track)
+      sprintf(buf, "%s",track->track_name);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_track_position(char *buf)
+{
+   if (track && emu) {
+      long seconds         = track->track_length / 1000;
+      long elapsed_seconds = (use_vgm_ ? vgm_backend_tell_ms() : gme_tell(emu)) / 1000;
+      sprintf(buf, "(%ld:%02ld / %ld:%02ld)",elapsed_seconds/60,elapsed_seconds%60,seconds/60,seconds % 60);
+   } else {
+      buf[0] = '\0';
+   }
+   return buf;
+}
+
+int get_track_elapsed_frames(void)
+{
+   if (use_vgm_)
+      return vgm_backend_tell_samples() / 1470;
+   if (emu)
+      return gme_tell_samples(emu) / 1470;
+   return 0;
+}
+
+void play_pause(void)
+{
+   is_playing_ = !is_playing_;
+}
+
+
+/* ---- textos do novo layout ---- */
+
+char *get_system_line(char *buf)
+{
+   const char *sys = "";
+   const char *dot;
+   char ext[12];
+   int i = 0;
+
+   buf[0] = '\0';
+   if (!track || !file)
+      return buf;
+
+   if (file->file_type == gme_spc_type)
+      sys = "Super Nintendo";
+   else if (file->file_type == gme_nsf_type || file->file_type == gme_nsfe_type)
+      sys = "Nintendo NES";
+   else if (file->file_type == gme_gbs_type)
+      sys = "Game Boy";
+   else if (file->file_type == gme_gym_type)
+      sys = "Sega Genesis";
+   else if (file->file_type == gme_vgm_type || file->file_type == gme_vgz_type)
+      sys = "Sega / Arcade";
+   else if (file->file_type == gme_hes_type)
+      sys = "TurboGrafx-16";
+   else if (file->file_type == gme_kss_type)
+      sys = "MSX / Master System";
+   else if (file->file_type == gme_ay_type)
+      sys = "ZX Spectrum";
+   else if (file->file_type == gme_sap_type)
+      sys = "Atari XL/XE";
+
+   dot = strrchr(file->name, '.');
+   if (dot)
+      for (dot++; *dot && i < 10; dot++, i++)
+         ext[i] = (*dot >= 'a' && *dot <= 'z') ? (char)(*dot - 32) : *dot;
+   ext[i] = '\0';
+
+   if (sys[0] && ext[0])
+      snprintf(buf, 96, "%s - %s", sys, ext);
+   else if (sys[0])
+      snprintf(buf, 96, "%s", sys);
+   else
+      snprintf(buf, 96, "%s", ext);
+   return buf;
+}
+
+char *get_track_label(char *buf)
+{
+   if (plist)
+      sprintf(buf, "Track %02d / %02d", current_track + 1, plist->num_tracks);
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_time_text(char *buf)
+{
+   if (track && emu)
+   {
+      long total   = track->track_length / 1000;
+      long elapsed = (use_vgm_ ? vgm_backend_tell_ms() : gme_tell(emu)) / 1000;
+      sprintf(buf, "%02ld:%02ld / %02ld:%02ld", elapsed / 60, elapsed % 60, total / 60, total % 60);
+   }
+   else
+      buf[0] = '\0';
+   return buf;
+}
+
+char *get_rate_text(char *buf)
+{
+   sprintf(buf, "%ld.%ld kHz", sample_rate_ / 1000, (sample_rate_ % 1000) / 100);
+   return buf;
+}
+
+int get_track_progress_permille(void)
+{
+   long total, elapsed;
+   if (!(track && emu))
+      return 0;
+   total = track->track_length;
+   if (total <= 0)
+      return 0;
+   elapsed = use_vgm_ ? vgm_backend_tell_ms() : gme_tell(emu);
+   if (elapsed < 0)     elapsed = 0;
+   if (elapsed > total) elapsed = total;
+   return (int)((double)elapsed * 1000.0 / (double)total);
+}

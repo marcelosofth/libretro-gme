@@ -1,0 +1,370 @@
+#include <string.h>
+#include <stdlib.h>
+#include <assert.h>
+
+#include <libretro.h>
+#include <retro_miscellaneous.h>
+#include <streams/file_stream.h>
+
+#include "graphics.h"
+#include "player.h"
+#include "spectrum.h"
+
+// Static globals
+static surface *framebuffer = NULL;
+static uint16_t previnput = 0;
+
+// Callbacks
+
+retro_log_printf_t log_cb;
+
+static retro_video_refresh_t video_cb;
+static retro_input_poll_t input_poll_cb;
+static retro_input_state_t input_state_cb;
+static retro_environment_t environ_cb;
+static retro_audio_sample_t audio_cb;
+static retro_audio_sample_batch_t audio_batch_cb;
+// libretro global setters
+void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
+void retro_set_input_poll(retro_input_poll_t cb) { input_poll_cb = cb; }
+void retro_set_input_state(retro_input_state_t cb) { input_state_cb = cb; }
+
+void retro_set_environment(retro_environment_t cb)
+{
+   struct retro_vfs_interface_info vfs_iface_info;
+   environ_cb = cb;
+
+   vfs_iface_info.required_interface_version = 1;
+   vfs_iface_info.iface                      = NULL;
+   if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_iface_info))
+      filestream_vfs_init(&vfs_iface_info);
+}
+
+void retro_set_audio_sample(retro_audio_sample_t cb) { audio_cb = cb; }
+void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_cb = cb; }
+
+unsigned retro_api_version(void) { return RETRO_API_VERSION; }
+unsigned retro_get_region(void) { return RETRO_REGION_PAL; }
+
+// Serialisation methods
+size_t retro_serialize_size(void) { return 0; }
+bool retro_serialize(void *data, size_t size) { return false; }
+bool retro_unserialize(const void *data, size_t size) { return false; }
+
+// libretro unused api functions
+void retro_set_controller_port_device(unsigned port, unsigned device) {}
+void *retro_get_memory_data(unsigned id) { return NULL; }
+size_t retro_get_memory_size(unsigned id){ return 0; }
+
+// Cheats
+void retro_cheat_reset(void) {}
+void retro_cheat_set(unsigned index, bool enabled, const char *code) {}
+
+/* ---- desenho de texto (sem alocar memoria, com clip) ---- */
+
+static void put_glyph(unsigned char ch, int px, int py, unsigned short color, int cx0, int cx1)
+{
+   int x, y;
+   int charx = (ch % 16) * 8;
+   int chary = (ch >> 4) * 8;
+   for (y = 0; y < 8; y++)
+   {
+      int yy = py + y;
+      if (yy < 0 || yy >= 240)
+         continue;
+      for (x = 0; x < 8; x++)
+      {
+         int xx = px + x;
+         if (xx < cx0 || xx >= cx1 || xx < 0 || xx >= 320)
+            continue;
+         if (is_font_pixel(charx + x, chary + y))
+            set_pixel(framebuffer, xx, yy, color);
+      }
+   }
+}
+
+/* colunas realmente usadas pelo glifo (para espacamento proporcional) */
+static void glyph_extent(unsigned char ch, int *x0, int *x1)
+{
+   int x, y;
+   int charx = (ch % 16) * 8;
+   int chary = (ch >> 4) * 8;
+   *x0 = 8;
+   *x1 = -1;
+   for (x = 0; x < 8; x++)
+      for (y = 0; y < 8; y++)
+         if (is_font_pixel(charx + x, chary + y))
+         {
+            if (x < *x0) *x0 = x;
+            if (x > *x1) *x1 = x;
+         }
+}
+
+static int text_width_prop(const char *text)
+{
+   int w = 0, x0, x1;
+   for (; *text; text++)
+   {
+      glyph_extent((unsigned char)*text, &x0, &x1);
+      w += (x1 < 0) ? 4 : (x1 - x0 + 2);
+   }
+   return w > 0 ? w - 1 : 0;
+}
+
+static void draw_text_prop(const char *text, int x, int y, unsigned short color)
+{
+   int x0, x1;
+   for (; *text; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      glyph_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += 4;
+         continue;
+      }
+      put_glyph(ch, x - x0, y, color, 0, 320);
+      x += (x1 - x0 + 2);
+   }
+}
+
+/* texto monoespacado; se passar de maxw, rola de um lado para o outro */
+static void draw_text_scroll(const char *text, int x, int y, int maxw, unsigned short color)
+{
+   int len   = (int)strlen(text);
+   int textw = len * 8;
+   int off   = 0, i;
+
+   if (textw > maxw)
+   {
+      int delta  = textw - maxw;
+      int delay  = 30;
+      int modulo = delta + delay * 2;
+      int frames = get_track_elapsed_frames();
+      off = (modulo - abs((frames / 2) % (2 * modulo) - modulo)) - delay;
+      if (off < 0)     off = 0;
+      if (off > delta) off = delta;
+   }
+
+   for (i = 0; i < len; i++)
+   {
+      int gx = x - off + i * 8;
+      if (gx + 8 <= x || gx >= x + maxw)
+         continue;
+      put_glyph((unsigned char)text[i], gx, y, color, x, x + maxw);
+   }
+}
+
+/* texto proporcional cortado em maxx */
+static void draw_text_prop_clip(const char *text, int x, int y, unsigned short color, int maxx)
+{
+   int x0, x1;
+   for (; *text && x < maxx; text++)
+   {
+      unsigned char ch = (unsigned char)*text;
+      glyph_extent(ch, &x0, &x1);
+      if (x1 < 0)
+      {
+         x += 4;
+         continue;
+      }
+      put_glyph(ch, x - x0, y, color, 0, maxx);
+      x += (x1 - x0 + 2);
+   }
+}
+
+/* LED de atividade: acende com o volume do audio e decai rapido */
+static int led_level = 0;
+
+static void led_update(const short *audio, int n)
+{
+   int i, pk = 0, cur;
+   for (i = 0; i < n; i++)
+   {
+      int v = audio[i];
+      if (v < 0) v = -v;
+      if (v > pk) pk = v;
+   }
+   cur = pk / 40;
+   if (cur > 255) cur = 255;
+   led_level = (led_level * 192) >> 8;
+   if (cur > led_level)
+      led_level = cur;
+}
+
+static void draw_led(int cx, int cy)
+{
+   int dx, dy;
+   int t = led_level;
+   unsigned short col = get_color(8 + (23 * t) / 255, 3 + (9 * t) / 255, 2 + (5 * t) / 255);
+   for (dy = -3; dy <= 3; dy++)
+      for (dx = -3; dx <= 3; dx++)
+         if (dx * dx + dy * dy <= 10)
+            set_pixel(framebuffer, cx + dx, cy + dy, col);
+   if (t > 200)
+      set_pixel(framebuffer, cx - 1, cy - 1, get_color(31, 40, 30));
+}
+
+/* ---- layout: cabecalho / espectro / progresso ---- */
+#define UI_LEFT   16
+#define UI_RIGHT  304
+#define UI_W      (UI_RIGHT - UI_LEFT)
+
+static void draw_ui(void)
+{
+   char message[512];
+   int w, prog;
+
+   /* cabecalho */
+   draw_text_scroll(get_song_name(message), UI_LEFT, 12, 208, get_color(30, 58, 25));
+
+   get_track_label(message);
+   w = text_width_prop(message);
+   draw_text_prop(message, UI_RIGHT - w, 12, get_color(28, 56, 28));
+
+   draw_text_scroll(get_game_name(message), UI_LEFT, 30, UI_W, get_color(19, 36, 27));
+
+   get_system_line(message);
+   draw_text_prop(message, UI_LEFT, 48, get_color(15, 33, 21));
+
+   /* SYSTEM: (led) chip de audio */
+   {
+      int lx = UI_LEFT + text_width_prop("CHIP:") + 8;
+      draw_text_prop("CHIP:", UI_LEFT, 66, get_color(15, 33, 21));
+      draw_led(lx + 3, 69);
+      draw_text_prop_clip(get_chip_text(message), lx + 12, 66, get_color(27, 54, 29), UI_RIGHT);
+   }
+
+   /* barra de progresso */
+   draw_shape(framebuffer, get_color(4, 8, 9), UI_LEFT, 209, UI_W, 6);
+   prog = get_track_progress_permille();
+   if (prog > 0)
+      draw_shape(framebuffer, get_color(12, 25, 28), UI_LEFT, 209, (UI_W * prog) / 1000, 6);
+
+   /* tempo (esquerda) e taxa de amostragem (direita) */
+   draw_text_prop(get_time_text(message), UI_LEFT, 221, get_color(27, 54, 29));
+
+   get_rate_text(message);
+   w = text_width_prop(message);
+   draw_text_prop(message, UI_RIGHT - w, 221, get_color(15, 33, 21));
+}
+
+/*
+ * Tell libretro about this core, it's name, version and which rom files it supports.
+ */
+void retro_get_system_info(struct retro_system_info *info)
+{
+   memset(info, 0, sizeof(*info));
+   info->library_name = "Game Music Emulator";
+   info->library_version = "v0.6.6";
+   info->need_fullpath = true;
+   info->valid_extensions = "ay|gbs|gym|hes|kss|nsf|nsfe|sap|spc|vgm|vgz|zip";
+   info->block_extract = true;
+}
+
+/*
+ * Tell libretro about the AV system; the fps, sound sample rate and the
+ * resolution of the display.
+ */
+void retro_get_system_av_info(struct retro_system_av_info *info)
+{
+   int pixel_format = RETRO_PIXEL_FORMAT_RGB565;
+   memset(info, 0, sizeof(*info));
+   info->timing.fps            = 60.0f;
+   info->timing.sample_rate    = 44100;
+   info->geometry.base_width   = 320;
+   info->geometry.base_height  = 240;
+   info->geometry.max_width    = 320;
+   info->geometry.max_height   = 240;
+   info->geometry.aspect_ratio = 320.0f / 240.0f;
+   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
+}
+
+void retro_init(void)
+{
+   unsigned level = 0;
+   /* set up some logging */
+   struct retro_log_callback log;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+      log_cb = log.log;
+   else
+      log_cb = NULL;
+
+   // the performance level is guide to frontend to give an idea of how intensive this core is to run
+   environ_cb(RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL, &level);
+   framebuffer = create_surface(320,240,2);
+}
+
+// End of retrolib
+void retro_deinit(void)
+{
+   if (framebuffer)
+      free_surface(framebuffer);
+   framebuffer = NULL;
+}
+
+// Reset gme
+void retro_reset(void)
+{
+    start_track(0);
+}
+
+// Run a single frame
+void retro_run(void)
+{
+   uint16_t input = 0;
+   uint16_t realinput = 0;
+   int i;
+   short *audio;
+
+   // input handling
+   input_poll_cb();
+   for(i=0;i<16;i++)
+   {
+      if(input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, i))
+         realinput |= 1<<i;
+   }
+   input = realinput & ~previnput;
+   previnput = realinput;
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_L))
+      prev_track();
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_R))
+      next_track();
+
+   if(input & (1<<RETRO_DEVICE_ID_JOYPAD_START))
+      play_pause();
+
+   //audio primeiro, para o espectro usar os samples deste frame
+   audio = play();
+   led_update(audio, 1470);
+   spectrum_push(audio, 735);
+   spectrum_update();
+
+   //graphic handling
+   spectrum_draw_background(framebuffer);
+   draw_ui();
+   spectrum_draw_bars(framebuffer);
+   video_cb(framebuffer->pixel_data, framebuffer->width, framebuffer->height, framebuffer->bytes_per_pixel * framebuffer->width);
+   //audio handling
+   audio_batch_cb(audio,735);
+}
+
+// File Loading
+bool retro_load_game(const struct retro_game_info *info)
+{
+   if (info && open_file(info->path, 44100))
+      return true;
+   return false;
+}
+
+bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info)
+{
+   return false;
+}
+
+void retro_unload_game(void)
+{
+   close_file();
+}

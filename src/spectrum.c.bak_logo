@@ -1,0 +1,194 @@
+#include <math.h>
+#include <stdint.h>
+#include "graphics.h"
+#include "spectrum.h"
+#include <string.h>
+#include "background.h"
+
+#define FFT_N      2048
+#define BANDS      36
+#define SEGS       17
+#define BAR_W      6
+#define BAR_PITCH  8
+#define BAR_X0     16
+#define BAR_BASE   203
+#define SEG_H      3
+#define SEG_PITCH  4
+#define PI_F       3.14159265f
+
+static float ring[FFT_N];
+static int   ring_pos = 0;
+static float window_tab[FFT_N];
+static float cos_tab[FFT_N / 2];
+static float sin_tab[FFT_N / 2];
+static int   rev_tab[FFT_N];
+static int   edge[BANDS + 1];
+static float re[FFT_N];
+static float im[FFT_N];
+static float bar[BANDS];
+static float peak[BANDS];
+static int   inited = 0;
+
+static void spectrum_init(void)
+{
+   int i, b, bits = 0;
+   float ratio = 371.5f;
+
+   while ((1 << bits) < FFT_N)
+      bits++;
+
+   for (i = 0; i < FFT_N; i++)
+   {
+      int r = 0, k;
+      for (k = 0; k < bits; k++)
+         if (i & (1 << k))
+            r |= 1 << (bits - 1 - k);
+      rev_tab[i]    = r;
+      window_tab[i] = 0.5f - 0.5f * cosf(2.0f * PI_F * i / (FFT_N - 1));
+   }
+
+   for (i = 0; i < FFT_N / 2; i++)
+   {
+      cos_tab[i] = cosf(2.0f * PI_F * i / FFT_N);
+      sin_tab[i] = -sinf(2.0f * PI_F * i / FFT_N);
+   }
+
+   for (b = 0; b <= BANDS; b++)
+   {
+      int e = (int)(2.0f * powf(ratio, (float)b / BANDS));
+      if (b > 0 && e <= edge[b - 1])
+         e = edge[b - 1] + 1;
+      if (e > FFT_N / 2)
+         e = FFT_N / 2;
+      edge[b] = e;
+   }
+   inited = 1;
+}
+
+static void fft(void)
+{
+   int size, half, step, i, j, k;
+
+   for (size = 2; size <= FFT_N; size <<= 1)
+   {
+      half = size >> 1;
+      step = FFT_N / size;
+      for (i = 0; i < FFT_N; i += size)
+      {
+         for (j = i, k = 0; j < i + half; j++, k += step)
+         {
+            float tr = re[j + half] * cos_tab[k] - im[j + half] * sin_tab[k];
+            float ti = re[j + half] * sin_tab[k] + im[j + half] * cos_tab[k];
+            re[j + half] = re[j] - tr;
+            im[j + half] = im[j] - ti;
+            re[j] += tr;
+            im[j] += ti;
+         }
+      }
+   }
+}
+
+void spectrum_push(const short *stereo, int frames)
+{
+   int i;
+   for (i = 0; i < frames; i++)
+   {
+      ring[ring_pos] = (float)(stereo[2 * i] + stereo[2 * i + 1]) * (0.5f / 32768.0f);
+      ring_pos = (ring_pos + 1) & (FFT_N - 1);
+   }
+}
+
+void spectrum_update(void)
+{
+   int i, b, k;
+
+   if (!inited)
+      spectrum_init();
+
+   for (i = 0; i < FFT_N; i++)
+   {
+      int idx = rev_tab[i];
+      re[idx] = ring[(ring_pos + i) & (FFT_N - 1)] * window_tab[i];
+      im[idx] = 0.0f;
+   }
+   fft();
+
+   for (b = 0; b < BANDS; b++)
+   {
+      float m = 0.0f, level, db;
+      for (k = edge[b]; k < edge[b + 1]; k++)
+      {
+         float p = re[k] * re[k] + im[k] * im[k];
+         if (p > m)
+            m = p;
+      }
+      m     = sqrtf(m) * (4.0f / FFT_N);
+      db    = 20.0f * log10f(m + 1e-6f) + 12.0f * (float)b / (BANDS - 1);
+      level = (db + 60.0f) / 60.0f;
+      if (level < 0.0f) level = 0.0f;
+      if (level > 1.0f) level = 1.0f;
+
+      if (level > bar[b])
+         bar[b] = level;
+      else
+         bar[b] *= 0.88f;
+
+      if (bar[b] > peak[b])
+         peak[b] = bar[b];
+      else
+      {
+         peak[b] -= 0.012f;
+         if (peak[b] < 0.0f)
+            peak[b] = 0.0f;
+      }
+   }
+}
+
+static void fill_rect(surface *surf, int x, int y, int w, int h, unsigned short color)
+{
+   int xx, yy;
+   uint16_t *px = (uint16_t *)surf->pixel_data;
+   for (yy = y; yy < y + h; yy++)
+      for (xx = x; xx < x + w; xx++)
+         px[xx + yy * surf->width] = color;
+}
+
+void spectrum_draw_background(surface *surf)
+{
+   static unsigned short cache[BG_W * BG_H];
+   static int ready = 0;
+   if (!ready)
+   {
+      int i;
+      for (i = 0; i < BG_W * BG_H; i++)
+      {
+         unsigned short v = bg_pixels[i];
+         cache[i] = get_color((v >> 11) & 31, (v >> 5) & 63, v & 31);
+      }
+      ready = 1;
+   }
+   memcpy(surf->pixel_data, cache, sizeof(cache));
+}
+
+void spectrum_draw_bars(surface *surf)
+{
+   int b, s;
+   unsigned short green  = get_color(8, 56, 17);
+   unsigned short yellow = get_color(30, 50, 6);
+   unsigned short red    = get_color(29, 22, 10);
+   unsigned short white  = get_color(31, 63, 31);
+
+   for (b = 0; b < BANDS; b++)
+   {
+      int x  = BAR_X0 + b * BAR_PITCH;
+      int n  = (int)(bar[b] * SEGS + 0.5f);
+      int pk = (int)(peak[b] * SEGS + 0.5f) - 1;
+
+      for (s = 0; s < n && s < SEGS; s++)
+         fill_rect(surf, x, BAR_BASE - s * SEG_PITCH - SEG_H, BAR_W, SEG_H,
+                   s < 10 ? green : (s < 13 ? yellow : red));
+
+      if (pk >= n && pk < SEGS)
+         fill_rect(surf, x, BAR_BASE - pk * SEG_PITCH - SEG_H, BAR_W, 2, white);
+   }
+}
