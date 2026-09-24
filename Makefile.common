@@ -202,8 +202,8 @@ else
 LIBVGM_BUILD = $(DEPS_DIR)/libvgm/build
 endif
 LDFLAGS += -Wl,--start-group $(shell find $(LIBVGM_BUILD) -name 'libvgm-*.a') -Wl,--end-group
-LDFLAGS += -liconv
 ifeq ($(platform),win)
+LDFLAGS += -liconv
 LDFLAGS += -static -static-libgcc -static-libstdc++
 else
 LDFLAGS += -lstdc++
