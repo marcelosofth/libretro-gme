@@ -62,6 +62,22 @@ static bool is_gme_allowed_ext(char *ext)
    return false;
 }
 
+/* alguns .zip (ex: gerados pelo Compress-Archive do PowerShell no Windows)
+   gravam o caminho interno das entradas usando '\' em vez de '/'.
+   O formato ZIP em si so reconhece '/' como separador de pasta, entao
+   normalizamos aqui, num unico lugar, assim que o nome sai do unzip -
+   qualquer zip antigo (com '\') ou novo (com '/') passa a funcionar igual
+   em todo o resto do arquivo. */
+static void normalize_zip_path(char *name)
+{
+   char *p;
+   for (p = name; *p; p++)
+   {
+      if (*p == '\\')
+         *p = '/';
+   }
+}
+
 static bool uncompress_file_data(file_data** fd)
 {
    int srcLen,dstLen;
@@ -135,6 +151,7 @@ static bool get_files_from_zip(const char *path,
       int err = unzGetCurrentFileInfo64(uf,&file_info,filename_inzip,sizeof(filename_inzip),NULL,0,NULL,0);
       if(err!=UNZ_OK)
          return false;
+      normalize_zip_path(filename_inzip);
       if(filename_inzip[file_info.size_filename -1]=='/')
          ext = strrchr(filename_inzip,'/');
       else
@@ -246,6 +263,8 @@ bool list_zip_entries(const char *path, const char *prefix, zip_entry ***dest_en
    for(i=0;i<(int)gi.number_entry;i++)
    {
       int err = unzGetCurrentFileInfo64(uf,&file_info,filename_inzip,sizeof(filename_inzip),NULL,0,NULL,0);
+      if (err==UNZ_OK)
+         normalize_zip_path(filename_inzip);
       if(err==UNZ_OK && file_info.size_filename>0 && filename_inzip[file_info.size_filename-1] != '/'
          && (prefix_len==0 || strncmp(filename_inzip,prefix,prefix_len)==0))
       {
@@ -352,16 +371,50 @@ void free_zip_entries(zip_entry **entries, int count)
    free(entries);
 }
 
-/* le o conteudo (ja descomprimido) de UM arquivo dentro do zip, para a memoria */
+/* le o conteudo (ja descomprimido) de UM arquivo dentro do zip, para a memoria.
+   Antes usava unzLocateFile(), que compara entry_name com o nome EXATAMENTE
+   como esta gravado no zip (inclusive '\' vs '/'); como a arvore do navegador
+   agora trabalha sempre com '/' (normalizado), a busca precisa normalizar
+   tambem o nome de cada entrada do zip antes de comparar, ou zips com '\'
+   deixam de ser encontrados na hora de extrair. */
 bool extract_zip_entry(const char *zip_path, const char *entry_name, char **dest_data, int *dest_len)
 {
+   unz_global_info64 gi;
    unz_file_info64 file_info;
+   char filename_inzip[256];
    char *buf;
    int bytes_read = 0;
+   int i;
+   bool found = false;
    unzFile uf = unzOpen64(zip_path);
    if (!uf)
       return false;
-   if (unzLocateFile(uf, entry_name, 0) != UNZ_OK)
+   if (unzGetGlobalInfo64(uf,&gi) != UNZ_OK)
+   {
+      unzClose(uf);
+      return false;
+   }
+   for(i=0;i<(int)gi.number_entry;i++)
+   {
+      if (unzGetCurrentFileInfo64(uf,&file_info,filename_inzip,sizeof(filename_inzip),NULL,0,NULL,0) == UNZ_OK)
+      {
+         normalize_zip_path(filename_inzip);
+#if defined(_WIN32) || defined(_WIN64)
+         if (_stricmp(filename_inzip, entry_name) == 0)
+#else
+         if (strcasecmp(filename_inzip, entry_name) == 0)
+#endif
+         {
+            found = true;
+            break;
+         }
+      }
+      if ((i+1) < (int)gi.number_entry)
+         unzGoToNextFile(uf);
+      else
+         break;
+   }
+   if (!found)
    {
       unzClose(uf);
       return false;
