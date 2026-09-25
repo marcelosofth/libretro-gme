@@ -28,6 +28,7 @@ jobs:
           cd deps/fluidsynth-src
           cmake -B build -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -Denable-alsa=0 -Denable-dbus=0 -Denable-jack=0 \
             -Denable-network=0 -Denable-oss=0 -Denable-pulseaudio=0 \
             -Denable-readline=0 -Denable-sdl2=0 -Denable-sdl3=0 \
